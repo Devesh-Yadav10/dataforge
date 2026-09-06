@@ -1,0 +1,43 @@
+{
+  "name": "iit-kgp",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "node dist/tests/shopping.test.js && node dist/tests/tracker.test.js && node dist/tests/turn.test.js && node dist/tests/interruption.test.js && node dist/tests/comparison.test.js && node dist/tests/stress.test.js",
+    "test:shopping": "node dist/tests/shopping.test.js",
+    "test:tracker": "node dist/tests/tracker.test.js",
+    "test:turn": "node dist/tests/turn.test.js",
+    "test:interruption": "node dist/tests/interruption.test.js",
+    "test:comparison": "node dist/tests/comparison.test.js",
+    "test:stress": "node dist/tests/stress.test.js",
+    "build": "tsc && tsc -p client/tsconfig.json",
+    "build:client": "vite build client",
+    "dev:client": "vite client",
+    "start": "node dist/agent/index.js",
+    "start:baseline": "node dist/agent/baseline/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
+  },
+  "dependencies": {
+    "@google/genai": "^2.21.0",
+    "@livekit/agents": "^1.7.1",
+    "@livekit/agents-plugin-deepgram": "^1.7.1",
+    "@livekit/agents-plugin-rime": "^1.7.1",
+    "dotenv": "^17.4.2",
+    "livekit-client": "^2.22.2",
+    "livekit-server-sdk": "^2.18.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  }
+}

@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Compiled output
+dist/
+build/
+
+# Environment variables
+.env
+.env.example
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db

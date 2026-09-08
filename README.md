@@ -24,15 +24,15 @@ Cancellation is best-effort. Generation fencing is the correctness mechanism.
 
 ## Project Structure
 
-- `src/`: TypeScript source code
-- `client/`: Client-side code (if any)
+- `agent/`: TypeScript backend agent and token server
+- `client/`: React/Vite client-side dashboard
 - `tests/`: Test files
 - `docs/`: Documentation
 
 ## Pipeline Architecture & Models
 
 - **STT (Speech-to-Text):** Deepgram Nova-2 (`deepgram/nova-2`)
-- **LLM:** Together AI streaming Llama 3.1 (`meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo`)
+- **LLM:** Google Gemini 2.5 Flash (`gemini-2.5-flash`) via the official `@google/genai` SDK
 - **TTS (Spoken Output):** Rime TTS
   - **Model ID:** `rime/coda`
   - **Speaker / Voice:** `celeste`
@@ -58,8 +58,10 @@ Server-side (`.env` — never committed to Git):
 - `LIVEKIT_API_KEY`: LiveKit project API key
 - `LIVEKIT_API_SECRET`: LiveKit project API secret
 - `DEEPGRAM_API_KEY`: Deepgram API key for Nova-2 STT
-- `TOGETHER_API_KEY`: Together AI API key for streaming LLM
+- `GEMINI_API_KEY`: Google Gemini API key for the LLM
 - `RIME_API_KEY`: Rime API key for Coda TTS synthesis
+- `LIVEKIT_ROOM_NAME`: Optional LiveKit room name (defaults to `default-room`)
+- `LOG_LEVEL`: Optional LiveKit logger level (defaults to `info`)
 - `PORT`: Optional server port for the token endpoint (defaults to `3000`)
 
 Client-side:
@@ -71,7 +73,7 @@ Client-side:
 - **Dataset:** 16 hardcoded deterministic products across headphones, laptops, and phones.
 - **Filtering Parameters:** `query`, `category`, `brand`, `max_price`, `min_ram_gb`.
 - **Artificial Delay:** Default ~4,000 ms delay with `AbortSignal` cancellation support to enable reproducible async race conditions for upcoming interruption and generation-fencing stages.
-- **Function Calling:** Together AI tool-calling (`tools` / `tool_choice: 'auto'`) -> `searchProducts` execution -> streaming spoken response through Rime TTS.
+- **Function Calling:** Gemini function calling -> `searchProducts` execution -> streaming spoken response through Rime TTS.
 
 ## Generation & Operation Tracking Architecture
 
@@ -93,7 +95,7 @@ Client-side:
 ## Unfenced Baseline Comparison
 
 To demonstrate why generation fencing is necessary, an unfenced baseline is provided at [`agent/baseline/index.ts`](agent/baseline/index.ts):
-- **Identical Setup:** Uses the exact same Deepgram Nova-2 STT, Together Llama 3.1 LLM, Rime Coda TTS, dataset, and shopping tools.
+- **Identical Setup:** Uses the exact same Deepgram Nova-2 STT, Gemini 2.5 Flash LLM, Rime Coda TTS, dataset, and shopping tools.
 - **Key Difference:** The unfenced baseline has **no generation tracking or fencing** (`isCurrent`, `generation_id`).
 - **The Failure Mode Exposed:** When a user interrupts an async tool operation ("Find me a laptop under $1000" -> interrupted with "under $800 with 16GB RAM"), cancellation alone may lose the race. In the unfenced baseline, the old completed tool result is erroneously accepted and fed into the LLM/TTS pipeline, speaking the stale answer over the active conversation. In the fenced implementation, the stale result is immediately discarded by generation fencing.
 
@@ -134,7 +136,7 @@ Stage 11 Completed: Minimal, Demo-Ready UI with generation visibility, active op
 1. Install dependencies: `npm install`
 2. Build the project: `npm run build`
 3. Run the agent: `npm start`
-4. Run the client: `npm run dev --prefix client` (or `npx vite client`)
+4. Run the client: `npm run dev:client` (or `npx vite client`)
 
 ## License
 

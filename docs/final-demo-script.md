@@ -2,7 +2,7 @@
 
 **Project:** Voice Shopping Assistant with Generation Fencing  
 **Problem Focus:** Realtime Interruption + Asynchronous Recovery  
-**Primary Voice Pipeline:** Deepgram Nova-2 (STT) ➔ Together Llama 3.1 8B (LLM) ➔ Deterministic Tool (Catalog) ➔ Rime Coda TTS (Celeste) ➔ LiveKit WebRTC
+**Primary Voice Pipeline:** Deepgram Nova-2 (STT) ➔ Google Gemini 2.5 Flash (LLM) ➔ Deterministic Tool (Catalog) ➔ Rime Coda TTS (Celeste) ➔ LiveKit WebRTC
 
 ---
 

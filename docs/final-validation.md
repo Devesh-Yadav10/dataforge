@@ -15,19 +15,19 @@
 
 | Component | File Path | Status | Role & Verification |
 | :--- | :--- | :--- | :--- |
-| **Fenced Agent** | `agent/index.ts` | Verified | Main production voice pipeline with Deepgram STT, Together LLM, Rime Coda TTS, and full GenerationTracker fencing. |
+| **Fenced Agent** | `agent/index.ts` | Verified | Main production voice pipeline with Deepgram STT, Gemini 2.5 Flash, Rime Coda TTS, and full GenerationTracker fencing. |
 | **Generation Tracker** | `agent/tracker.ts` | Verified | Central source of truth for `session_id`, `generation_id`, `operation_id`, abort dispatching, and atomic invalidation. |
 | **Shopping Catalog & Tools** | `agent/tools/shopping.ts` | Verified | 16-item deterministic dataset, `search_products` with configurable artificial delay (~4000ms), and AbortSignal support. |
 | **Unfenced Baseline** | `agent/baseline/index.ts` | Verified | Fair comparison agent without generation fencing, demonstrating the async race failure mode. |
 | **Observability Client UI** | `client/src/main.tsx` | Verified | Realtime dashboard showing generation telemetry, active/discarded operations, live transcripts, and benchmark evidence. |
-| **Unit & Integration Tests** | `tests/*.test.ts` | Verified | 5 complete test suites covering shopping queries, generation invariants, barge-in logic, comparison races, and 100-trial stress tests. |
+| **Unit & Integration Tests** | `tests/*.test.ts` | Verified | 6 complete test suites covering shopping queries, turn handling, generation invariants, barge-in logic, comparison races, and 100-trial stress tests. |
 | **Stage 10 Benchmark Data** | `tests/results/stage10-results.json` | Verified | Persisted empirical data covering 100 deterministic trials per implementation. |
 
 ---
 
 ## 3. Production Architecture Verification
 - **Speech-to-Text (STT):** Deepgram Nova-2 (`deepgram/nova-2`) via `@livekit/agents-plugin-deepgram`.
-- **Large Language Model (LLM):** Together AI streaming Llama 3.1 (`meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo`).
+- **Large Language Model (LLM):** Google Gemini 2.5 Flash (`gemini-2.5-flash`) via `@google/genai`, with Gemini function calling and streamed final responses.
 - **Text-to-Speech (TTS):** Rime TTS (`rime/coda`, voice `celeste`, language `en`, 16kHz PCM audio frames).
 - **Transport:** WebSocket streaming through LiveKit Agent Audio Track into the WebRTC client.
 - **Controlled Latency:** Tool delay defaults to ~4,000ms to expose async race windows.
@@ -67,7 +67,7 @@ When a user begins speaking (`AgentSessionEventTypes.UserStateChanged` with `new
 ---
 
 ## 6. Security & Environment Variable Validation
-- **Server-Side Key Isolation:** `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `DEEPGRAM_API_KEY`, `TOGETHER_API_KEY`, and `RIME_API_KEY` remain strictly server-side via `process.env`.
+- **Server-Side Key Isolation:** `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `DEEPGRAM_API_KEY`, `GEMINI_API_KEY`, and `RIME_API_KEY` remain strictly server-side via `process.env`.
 - **Dynamic Short-Lived Tokens:** Browser acquires single-use, 15-minute TTL tokens on-demand via `GET /token` from the backend service.
 - **Zero Client Secrets:** The client requires no `VITE_LIVEKIT_TOKEN` or `VITE_LIVEKIT_URL`. No secrets are embedded in frontend source code.
 - **Git Protection:** `.env` is listed in `.gitignore`. `.env.example` contains sanitized placeholders only.

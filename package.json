@@ -11,7 +11,7 @@
     "test:interruption": "node dist/tests/interruption.test.js",
     "test:comparison": "node dist/tests/comparison.test.js",
     "test:stress": "node dist/tests/stress.test.js",
-    "build": "tsc && tsc -p client/tsconfig.json",
+    "build": "tsc && vite build client",
     "build:client": "vite build client",
     "dev:client": "vite client",
     "start": "node dist/agent/index.js",

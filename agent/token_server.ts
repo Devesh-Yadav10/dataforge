@@ -1,4 +1,6 @@
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AccessToken } from 'livekit-server-sdk';
 
@@ -7,7 +9,57 @@ export interface TokenResponse {
   token: string;
 }
 
+const MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+};
+
 export function startTokenServer(port = Number(process.env.PORT || 3000)): http.Server {
+  const clientDistDir = path.resolve(process.cwd(), 'client', 'dist');
+
+  const serveStaticFile = (reqPath: string, res: http.ServerResponse): boolean => {
+    const sanitizedPath = reqPath === '/' ? 'index.html' : reqPath.replace(/^\/+/, '');
+    const targetFile = path.resolve(clientDistDir, sanitizedPath);
+
+    // Prevent path traversal outside client/dist directory
+    if (!targetFile.startsWith(clientDistDir)) {
+      return false;
+    }
+
+    if (!fs.existsSync(targetFile)) {
+      return false;
+    }
+
+    try {
+      const stat = fs.statSync(targetFile);
+      if (!stat.isFile()) {
+        return false;
+      }
+
+      const ext = path.extname(targetFile).toLowerCase();
+      const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Content-Length': stat.size,
+      });
+      fs.createReadStream(targetFile).pipe(res);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const server = http.createServer(async (req, res) => {
     // Enable CORS for development convenience
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -75,9 +127,16 @@ export function startTokenServer(port = Number(process.env.PORT || 3000)): http.
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to generate token' }));
       }
-    } else if (url.pathname === '/health') {
+    } else if (url.pathname === '/health' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'ok' }));
+    } else if (req.method === 'GET' || req.method === 'HEAD') {
+      // Serve static frontend assets from client/dist
+      const served = serveStaticFile(url.pathname, res);
+      if (!served) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found' }));
+      }
     } else {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not found' }));

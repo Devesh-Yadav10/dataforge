@@ -259,6 +259,126 @@ export async function searchProducts(
   };
 }
 
+export interface CompareProductsParams {
+  product_a: string;
+  product_b: string;
+  delayMs?: number;
+}
+
+export interface ComparisonDifference {
+  attribute: string;
+  productA: string | number;
+  productB: string | number;
+}
+
+export interface ProductComparisonResult {
+  success: boolean;
+  error?: string;
+  productA?: Product;
+  productB?: Product;
+  price_difference?: number;
+  cheaper_product?: string;
+  differences?: ComparisonDifference[];
+}
+
+function findProductByIdOrName(identifier: string): Product | undefined {
+  if (!identifier) return undefined;
+  const cleaned = identifier.trim().toLowerCase();
+  // 1. Exact ID match
+  const byId = PRODUCTS_CATALOG.find((p) => p.id.toLowerCase() === cleaned);
+  if (byId) return byId;
+
+  // 2. Exact or substring Name match
+  const byName = PRODUCTS_CATALOG.find((p) => p.name.toLowerCase() === cleaned);
+  if (byName) return byName;
+
+  const byPartial = PRODUCTS_CATALOG.find((p) => p.name.toLowerCase().includes(cleaned) || cleaned.includes(p.name.toLowerCase()));
+  if (byPartial) return byPartial;
+
+  // 3. Match brand + category (e.g. "Sony headphones", "Bose")
+  const byBrand = PRODUCTS_CATALOG.find((p) => {
+    const brandMatch = p.brand.toLowerCase().includes(cleaned) || cleaned.includes(p.brand.toLowerCase());
+    return brandMatch;
+  });
+  return byBrand;
+}
+
+export async function compareProducts(
+  params: CompareProductsParams,
+  options?: { signal?: AbortSignal; defaultDelayMs?: number }
+): Promise<ProductComparisonResult> {
+  const delay = params.delayMs ?? options?.defaultDelayMs ?? 3000;
+
+  if (delay > 0) {
+    if (options?.signal?.aborted) {
+      throw new Error('Operation aborted');
+    }
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        resolve();
+      }, delay);
+
+      if (options?.signal) {
+        options.signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            reject(new Error('Operation aborted'));
+          },
+          { once: true }
+        );
+      }
+    });
+  }
+
+  const pA = findProductByIdOrName(params.product_a);
+  const pB = findProductByIdOrName(params.product_b);
+
+  if (!pA || !pB) {
+    const missing: string[] = [];
+    if (!pA) missing.push(`Product A "${params.product_a}"`);
+    if (!pB) missing.push(`Product B "${params.product_b}"`);
+    return {
+      success: false,
+      error: `Could not find ${missing.join(' and ')} in catalog.`,
+    };
+  }
+
+  const priceDiff = Math.abs(pA.price - pB.price);
+  let cheaper = 'Both have identical price';
+  if (pA.price < pB.price) cheaper = pA.name;
+  else if (pB.price < pA.price) cheaper = pB.name;
+
+  const differences: ComparisonDifference[] = [
+    { attribute: 'Price', productA: `$${pA.price}`, productB: `$${pB.price}` },
+    { attribute: 'Brand', productA: pA.brand, productB: pB.brand },
+    { attribute: 'Category', productA: pA.category, productB: pB.category },
+  ];
+
+  if (pA.ram_gb || pB.ram_gb) {
+    differences.push({
+      attribute: 'RAM',
+      productA: pA.ram_gb ? `${pA.ram_gb} GB` : 'N/A',
+      productB: pB.ram_gb ? `${pB.ram_gb} GB` : 'N/A',
+    });
+  }
+
+  differences.push({
+    attribute: 'Key Features',
+    productA: pA.description,
+    productB: pB.description,
+  });
+
+  return {
+    success: true,
+    productA: pA,
+    productB: pB,
+    price_difference: priceDiff,
+    cheaper_product: cheaper,
+    differences,
+  };
+}
+
 export const GEMINI_SHOPPING_TOOL = {
   name: 'search_products',
   description: 'Search the local product catalog for headphones, laptops, or phones with criteria like brand, max price, min RAM, etc.',
@@ -287,6 +407,25 @@ export const GEMINI_SHOPPING_TOOL = {
         description: 'Minimum RAM in GB (for laptops and phones).',
       },
     },
+  },
+};
+
+export const GEMINI_COMPARE_TOOL = {
+  name: 'compare_products',
+  description: 'Compare exactly two products from the catalog side-by-side using product IDs (e.g., hp-3, hp-1, lap-2) or exact names from conversation context.',
+  parametersJsonSchema: {
+    type: 'object',
+    properties: {
+      product_a: {
+        type: 'string',
+        description: 'The product ID (e.g., hp-3) or name of the first product to compare.',
+      },
+      product_b: {
+        type: 'string',
+        description: 'The product ID (e.g., hp-1) or name of the second product to compare.',
+      },
+    },
+    required: ['product_a', 'product_b'],
   },
 };
 
@@ -321,6 +460,27 @@ export const SHOPPING_TOOLS_DEFINITIONS = [
             description: 'Minimum RAM in GB (for laptops and phones).',
           },
         },
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'compare_products',
+      description: 'Compare exactly two products from the catalog side-by-side using product IDs or names.',
+      parameters: {
+        type: 'object',
+        properties: {
+          product_a: {
+            type: 'string',
+            description: 'The product ID or name of the first product.',
+          },
+          product_b: {
+            type: 'string',
+            description: 'The product ID or name of the second product.',
+          },
+        },
+        required: ['product_a', 'product_b'],
       },
     },
   },

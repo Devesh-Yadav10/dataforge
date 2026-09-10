@@ -75,7 +75,7 @@ export async function startUnfencedBaseline() {
 
   const geminiApiKey = process.env.GEMINI_API_KEY;
   const ai = new GoogleGenAI({ apiKey: geminiApiKey });
-  const GEMINI_MODEL = 'gemini-2.5-flash';
+  const GEMINI_MODEL = 'gemini-3.6-flash';
 
   const session = new AgentSession({
     stt: deepgramSTT,
@@ -211,7 +211,7 @@ export async function startUnfencedBaseline() {
                 role: 'user',
                 parts: [{ text: turnText }],
               },
-              {
+              initialResponse.candidates?.[0]?.content || {
                 role: 'model',
                 parts: [
                   {

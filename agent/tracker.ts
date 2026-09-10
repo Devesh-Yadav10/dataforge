@@ -41,11 +41,13 @@ export class GenerationTracker {
   private _currentGeneration: number;
   private _operationCounter: number = 0;
   private readonly _activeOperations: Map<string, Operation> = new Map();
+  private readonly _generationControllers: Map<number, AbortController> = new Map();
   private readonly _eventListeners: Array<(event: StructuredEvent) => void> = [];
 
   constructor(sessionId?: string, initialGeneration: number = 1) {
     this._sessionId = sessionId || `session-${randomUUID().slice(0, 8)}`;
     this._currentGeneration = initialGeneration;
+    this._generationControllers.set(initialGeneration, new AbortController());
   }
 
   get sessionId(): string {
@@ -54,6 +56,16 @@ export class GenerationTracker {
 
   get currentGeneration(): number {
     return this._currentGeneration;
+  }
+
+  public getGenerationSignal(generationId?: number): AbortSignal {
+    const genId = generationId ?? this._currentGeneration;
+    let controller = this._generationControllers.get(genId);
+    if (!controller) {
+      controller = new AbortController();
+      this._generationControllers.set(genId, controller);
+    }
+    return controller.signal;
   }
 
   public getOperation(operationId: string): Operation | undefined {
@@ -83,7 +95,21 @@ export class GenerationTracker {
   }
 
   public nextGeneration(reason: string = 'new_turn'): number {
-    this._currentGeneration += 1;
+    const oldGen = this._currentGeneration;
+    const newGen = oldGen + 1;
+    this._currentGeneration = newGen;
+
+    // Abort old generation controller & operations
+    const oldController = this._generationControllers.get(oldGen);
+    if (oldController && !oldController.signal.aborted) {
+      try { oldController.abort(reason); } catch (e) {}
+    }
+    this._generationControllers.delete(oldGen);
+    this.abortGeneration(oldGen, reason);
+
+    // Initialize new generation controller
+    this._generationControllers.set(newGen, new AbortController());
+
     this.emitEvent({
       timestamp: Date.now(),
       session_id: this._sessionId,
@@ -100,7 +126,7 @@ export class GenerationTracker {
    * Primary interruption handler:
    * 1. Capture old generation
    * 2. Atomically increment generation FIRST (invalidates old generation)
-   * 3. Abort all running operations belonging to old generation
+   * 3. Abort all running operations and generation controller belonging to old generation
    * 4. Emit structured events
    */
   public invalidateCurrentGeneration(reason: string = 'user_interruption'): {
@@ -112,6 +138,12 @@ export class GenerationTracker {
     // Step 1 & 2: Monotonically increment FIRST so old generation is immediately stale
     const newGen = this._currentGeneration + 1;
     this._currentGeneration = newGen;
+
+    const oldController = this._generationControllers.get(oldGen);
+    if (oldController && !oldController.signal.aborted) {
+      try { oldController.abort(reason); } catch (e) {}
+    }
+    this._generationControllers.delete(oldGen);
 
     this.emitEvent({
       timestamp: Date.now(),
@@ -144,6 +176,9 @@ export class GenerationTracker {
     // Step 3: Abort running operations belonging to old generation
     const abortedCount = this.abortGeneration(oldGen, reason);
 
+    // Initialize new generation controller
+    this._generationControllers.set(newGen, new AbortController());
+
     // Step 4: Emit new generation started
     this.emitEvent({
       timestamp: Date.now(),
@@ -167,6 +202,11 @@ export class GenerationTracker {
 
   public abortGeneration(generationId: number, reason: string = 'STALE_GENERATION'): number {
     let count = 0;
+    const controller = this._generationControllers.get(generationId);
+    if (controller && !controller.signal.aborted) {
+      try { controller.abort(reason); } catch (e) {}
+    }
+
     for (const op of this._activeOperations.values()) {
       if (op.generation_id === generationId && op.status === 'running') {
         op.cancellation_requested = true;
@@ -205,6 +245,17 @@ export class GenerationTracker {
       abortController: new AbortController(),
       status: 'running',
     };
+
+    const genSignal = this.getGenerationSignal(genId);
+    if (genSignal.aborted) {
+      try { operation.abortController.abort(genSignal.reason || 'STALE_GENERATION'); } catch (e) {}
+    } else {
+      genSignal.addEventListener('abort', () => {
+        if (!operation.abortController.signal.aborted) {
+          try { operation.abortController.abort(genSignal.reason || 'STALE_GENERATION'); } catch (e) {}
+        }
+      }, { once: true });
+    }
 
     this._activeOperations.set(opId, operation);
 

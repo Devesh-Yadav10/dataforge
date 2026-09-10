@@ -1,5 +1,5 @@
 {
-  "test_run_at": "2026-09-02T17:56:37.942Z",
+  "test_run_at": "2026-09-10T10:07:38.547Z",
   "total_trials": 100,
   "fenced_summary": {
     "implementation": "fenced",
@@ -17,8 +17,8 @@
     "recovery_success_rate_pct": 100,
     "interruption_to_invalidation_median_ms": 0,
     "interruption_to_invalidation_p95_ms": 0,
-    "new_response_latency_median_ms": 15,
-    "new_response_latency_p95_ms": 16
+    "new_response_latency_median_ms": 5,
+    "new_response_latency_p95_ms": 7
   },
   "unfenced_summary": {
     "implementation": "unfenced",
@@ -36,8 +36,8 @@
     "recovery_success_rate_pct": 50,
     "interruption_to_invalidation_median_ms": 0,
     "interruption_to_invalidation_p95_ms": 1,
-    "new_response_latency_median_ms": 15,
-    "new_response_latency_p95_ms": 16
+    "new_response_latency_median_ms": 5,
+    "new_response_latency_p95_ms": 7
   },
   "rapid_test_passed": true,
   "concurrent_test_passed": true,
@@ -45,8 +45,8 @@
     {
       "trial_id": 1,
       "implementation": "fenced",
-      "started_at": 1788371794826,
-      "interruption_at": 1788371794826,
+      "started_at": 1789034856922,
+      "interruption_at": 1789034856922,
       "old_generation": 1,
       "new_generation": 2,
       "old_operation_id": "op-1",
@@ -60,13 +60,13 @@
       "new_result_accepted": true,
       "recovered": true,
       "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 20
+      "new_response_latency_ms": 7
     },
     {
       "trial_id": 2,
       "implementation": "fenced",
-      "started_at": 1788371794846,
-      "interruption_at": 1788371794846,
+      "started_at": 1789034856933,
+      "interruption_at": 1789034856933,
       "old_generation": 1,
       "new_generation": 2,
       "old_operation_id": "op-1",
@@ -80,13 +80,13 @@
       "new_result_accepted": true,
       "recovered": true,
       "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 15
+      "new_response_latency_ms": 6
     },
     {
       "trial_id": 3,
       "implementation": "fenced",
-      "started_at": 1788371794861,
-      "interruption_at": 1788371794861,
+      "started_at": 1789034856939,
+      "interruption_at": 1789034856939,
       "old_generation": 1,
       "new_generation": 2,
       "old_operation_id": "op-1",
@@ -100,13 +100,13 @@
       "new_result_accepted": true,
       "recovered": true,
       "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 15
+      "new_response_latency_ms": 7
     },
     {
       "trial_id": 4,
       "implementation": "fenced",
-      "started_at": 1788371794876,
-      "interruption_at": 1788371794876,
+      "started_at": 1789034856951,
+      "interruption_at": 1789034856951,
       "old_generation": 1,
       "new_generation": 2,
       "old_operation_id": "op-1",
@@ -120,13 +120,13 @@
       "new_result_accepted": true,
       "recovered": true,
       "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 15
+      "new_response_latency_ms": 5
     },
     {
       "trial_id": 5,
       "implementation": "fenced",
-      "started_at": 1788371794891,
-      "interruption_at": 1788371794891,
+      "started_at": 1789034856956,
+      "interruption_at": 1789034856956,
       "old_generation": 1,
       "new_generation": 2,
       "old_operation_id": "op-1",
@@ -139,14 +139,14 @@
       "discard_reason": "STALE_GENERATION",
       "new_result_accepted": true,
       "recovered": true,
-      "interruption_to_invalidation_ms": 1,
-      "new_response_latency_ms": 15
+      "interruption_to_invalidation_ms": 0,
+      "new_response_latency_ms": 6
     },
     {
       "trial_id": 6,
       "implementation": "fenced",
-      "started_at": 1788371794907,
-      "interruption_at": 1788371794907,
+      "started_at": 1789034856966,
+      "interruption_at": 1789034856966,
       "old_generation": 1,
       "new_generation": 2,
       "old_operation_id": "op-1",
@@ -159,14 +159,14 @@
       "discard_reason": "ABORTED",
       "new_result_accepted": true,
       "recovered": true,
-      "interruption_to_invalidation_ms": 1,
-      "new_response_latency_ms": 14
+      "interruption_to_invalidation_ms": 0,
+      "new_response_latency_ms": 5
     },
     {
       "trial_id": 7,
       "implementation": "fenced",
-      "started_at": 1788371794922,
-      "interruption_at": 1788371794922,
+      "started_at": 1789034856971,
+      "interruption_at": 1789034856971,
       "old_generation": 1,
       "new_generation": 2,
       "old_operation_id": "op-1",
@@ -179,14 +179,14 @@
       "discard_reason": "STALE_GENERATION",
       "new_result_accepted": true,
       "recovered": true,
-      "interruption_to_invalidation_ms": 1,
-      "new_response_latency_ms": 15
+      "interruption_to_invalidation_ms": 0,
+      "new_response_latency_ms": 5
     },
     {
       "trial_id": 8,
       "implementation": "fenced",
-      "started_at": 1788371794938,
-      "interruption_at": 1788371794938,
+      "started_at": 1789034856981,
+      "interruption_at": 1789034856981,
       "old_generation": 1,
       "new_generation": 2,
       "old_operation_id": "op-1",
@@ -199,14 +199,14 @@
       "discard_reason": "ABORTED",
       "new_result_accepted": true,
       "recovered": true,
-      "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 16
+      "interruption_to_invalidation_ms": 1,
+      "new_response_latency_ms": 5
     },
     {
       "trial_id": 9,
       "implementation": "fenced",
-      "started_at": 1788371794954,
-      "interruption_at": 1788371794954,
+      "started_at": 1789034856987,
+      "interruption_at": 1789034856987,
       "old_generation": 1,
       "new_generation": 2,
       "old_operation_id": "op-1",
@@ -220,13 +220,13 @@
       "new_result_accepted": true,
       "recovered": true,
       "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 15
+      "new_response_latency_ms": 6
     },
     {
       "trial_id": 10,
       "implementation": "fenced",
-      "started_at": 1788371794969,
-      "interruption_at": 1788371794969,
+      "started_at": 1789034856997,
+      "interruption_at": 1789034856997,
       "old_generation": 1,
       "new_generation": 2,
       "old_operation_id": "op-1",
@@ -240,15 +240,15 @@
       "new_result_accepted": true,
       "recovered": true,
       "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 15
+      "new_response_latency_ms": 5
     }
   ],
   "unfenced_sample_records": [
     {
       "trial_id": 1,
       "implementation": "unfenced",
-      "started_at": 1788371796386,
-      "interruption_at": 1788371796386,
+      "started_at": 1789034857735,
+      "interruption_at": 1789034857735,
       "old_generation": null,
       "new_generation": null,
       "old_operation_id": "baseline-op-1-1",
@@ -261,13 +261,13 @@
       "new_result_accepted": true,
       "recovered": false,
       "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 16
+      "new_response_latency_ms": 5
     },
     {
       "trial_id": 2,
       "implementation": "unfenced",
-      "started_at": 1788371796402,
-      "interruption_at": 1788371796402,
+      "started_at": 1789034857746,
+      "interruption_at": 1789034857746,
       "old_generation": null,
       "new_generation": null,
       "old_operation_id": "baseline-op-2-1",
@@ -281,13 +281,13 @@
       "new_result_accepted": true,
       "recovered": true,
       "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 15
+      "new_response_latency_ms": 5
     },
     {
       "trial_id": 3,
       "implementation": "unfenced",
-      "started_at": 1788371796417,
-      "interruption_at": 1788371796417,
+      "started_at": 1789034857751,
+      "interruption_at": 1789034857751,
       "old_generation": null,
       "new_generation": null,
       "old_operation_id": "baseline-op-3-1",
@@ -300,13 +300,13 @@
       "new_result_accepted": true,
       "recovered": false,
       "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 16
+      "new_response_latency_ms": 5
     },
     {
       "trial_id": 4,
       "implementation": "unfenced",
-      "started_at": 1788371796433,
-      "interruption_at": 1788371796433,
+      "started_at": 1789034857761,
+      "interruption_at": 1789034857761,
       "old_generation": null,
       "new_generation": null,
       "old_operation_id": "baseline-op-4-1",
@@ -320,13 +320,13 @@
       "new_result_accepted": true,
       "recovered": true,
       "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 16
+      "new_response_latency_ms": 6
     },
     {
       "trial_id": 5,
       "implementation": "unfenced",
-      "started_at": 1788371796449,
-      "interruption_at": 1788371796449,
+      "started_at": 1789034857767,
+      "interruption_at": 1789034857767,
       "old_generation": null,
       "new_generation": null,
       "old_operation_id": "baseline-op-5-1",
@@ -339,13 +339,13 @@
       "new_result_accepted": true,
       "recovered": false,
       "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 15
+      "new_response_latency_ms": 5
     },
     {
       "trial_id": 6,
       "implementation": "unfenced",
-      "started_at": 1788371796464,
-      "interruption_at": 1788371796464,
+      "started_at": 1789034857778,
+      "interruption_at": 1789034857778,
       "old_generation": null,
       "new_generation": null,
       "old_operation_id": "baseline-op-6-1",
@@ -359,13 +359,13 @@
       "new_result_accepted": true,
       "recovered": true,
       "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 16
+      "new_response_latency_ms": 5
     },
     {
       "trial_id": 7,
       "implementation": "unfenced",
-      "started_at": 1788371796480,
-      "interruption_at": 1788371796480,
+      "started_at": 1789034857783,
+      "interruption_at": 1789034857783,
       "old_generation": null,
       "new_generation": null,
       "old_operation_id": "baseline-op-7-1",
@@ -378,13 +378,13 @@
       "new_result_accepted": true,
       "recovered": false,
       "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 15
+      "new_response_latency_ms": 5
     },
     {
       "trial_id": 8,
       "implementation": "unfenced",
-      "started_at": 1788371796495,
-      "interruption_at": 1788371796495,
+      "started_at": 1789034857794,
+      "interruption_at": 1789034857794,
       "old_generation": null,
       "new_generation": null,
       "old_operation_id": "baseline-op-8-1",
@@ -398,13 +398,13 @@
       "new_result_accepted": true,
       "recovered": true,
       "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 16
+      "new_response_latency_ms": 6
     },
     {
       "trial_id": 9,
       "implementation": "unfenced",
-      "started_at": 1788371796511,
-      "interruption_at": 1788371796511,
+      "started_at": 1789034857800,
+      "interruption_at": 1789034857800,
       "old_generation": null,
       "new_generation": null,
       "old_operation_id": "baseline-op-9-1",
@@ -417,13 +417,13 @@
       "new_result_accepted": true,
       "recovered": false,
       "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 15
+      "new_response_latency_ms": 5
     },
     {
       "trial_id": 10,
       "implementation": "unfenced",
-      "started_at": 1788371796526,
-      "interruption_at": 1788371796526,
+      "started_at": 1789034857811,
+      "interruption_at": 1789034857811,
       "old_generation": null,
       "new_generation": null,
       "old_operation_id": "baseline-op-10-1",
@@ -437,7 +437,7 @@
       "new_result_accepted": true,
       "recovered": true,
       "interruption_to_invalidation_ms": 0,
-      "new_response_latency_ms": 15
+      "new_response_latency_ms": 5
     }
   ]
 }

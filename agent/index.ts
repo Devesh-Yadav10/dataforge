@@ -14,7 +14,7 @@ import {
 import { STT as DeepgramSTT } from '@livekit/agents-plugin-deepgram';
 import { TTS as RimeTTS } from '@livekit/agents-plugin-rime';
 import { GoogleGenAI } from '@google/genai';
-import { searchProducts, GEMINI_SHOPPING_TOOL } from './tools/shopping.js';
+import { searchProducts, GEMINI_SHOPPING_TOOL, compactToolResult } from './tools/shopping.js';
 import { GenerationTracker } from './tracker.js';
 import { startTokenServer } from './token_server.js';
 
@@ -28,10 +28,10 @@ class VoiceAssistantAgent extends Agent {
     super({
       instructions: "You are a helpful and concise voice shopping assistant.",
       turnHandling: {
-        turnDetection: undefined,
+        turnDetection: new inference.TurnDetector(),
         endpointing: {
           mode: 'fixed',
-          minDelay: 2000, // Conservative endpointing delay (2000ms): aggregates multi-segment Deepgram STT chunks into one coherent turn
+          minDelay: 800,
         },
         interruption: {
           enabled: true,
@@ -90,10 +90,10 @@ async function main() {
     stt: deepgramSTT,
     tts: rimeTTS,
     turnHandling: {
-      turnDetection: undefined,
+      turnDetection: new inference.TurnDetector(),
       endpointing: {
         mode: 'fixed',
-        minDelay: 2000,
+        minDelay: 800,
       },
       interruption: {
         enabled: true,
@@ -177,6 +177,9 @@ async function main() {
   let currentSpeechHandle: any = null;
   let isInterruptedForCurrentUtterance = false;
 
+  // Centralized session conversation history for multi-turn Gemini context retention
+  const conversationHistory: Array<{ role: 'user' | 'model'; parts: Array<any> }> = [];
+
   // Helper to check if the assistant is currently responding (TTS actively speaking or tool executing)
   // INVARIANT: An in-flight LLM query does NOT count as active response for barge-in
   const isAgentProducingResponse = () => {
@@ -196,18 +199,27 @@ async function main() {
     let activeLlmOp = initialLlmOp;
     let ttsOp: ReturnType<typeof tracker.startOperation> | null = null;
 
+    let userTurnContent = { role: 'user', parts: [{ text: turnText }] };
+    let modelToolCallContent: any = null;
+    let userToolResponseContent: any = null;
+
     try {
       console.log(`[LLM] Gemini request started: "${turnText}" (Gen: ${turnGen})`);
 
-      // Step 1: Query Gemini LLM with deterministic shopping tool calling enabled
+      // Construct multi-turn contents for Gemini, combining session history and current user turn
+      const initialContents = [...conversationHistory, userTurnContent];
+
+      // Step 1: Query Gemini LLM with deterministic shopping tool calling enabled & AbortSignal
       const initialResponse = await ai.models.generateContent({
         model: GEMINI_MODEL,
-        contents: turnText,
+        contents: initialContents,
         config: {
           systemInstruction:
-            'You are a concise voice shopping assistant. When the user asks to find or filter headphones, laptops, or phones by price, brand, or specs, call the search_products tool.',
+            'You are a concise voice shopping assistant. When the user asks to find or filter headphones, laptops, or phones by price, brand, or specs, call the search_products tool. Remember previous products, brands, budgets, or constraints mentioned in the conversation context when the user provides follow-up instructions like "increase my budget to $400" or "specifically Sony".',
           tools: [{ functionDeclarations: [GEMINI_SHOPPING_TOOL] }],
           temperature: 0.7,
+          maxOutputTokens: 256,
+          abortSignal: initialLlmOp.abortController.signal,
         },
       });
 
@@ -276,6 +288,8 @@ async function main() {
           operation_id: toolOp.operation_id,
           generation_id: toolOp.generation_id,
           result_count: toolResult.products.length,
+          products: toolResult.products,
+          arguments: parsedArgs,
         });
 
         // Track final LLM response generation
@@ -283,41 +297,35 @@ async function main() {
         activeLlmOp = finalLlmOp;
 
         console.log(`[LLM] Gemini final response stream started`);
-        // Step 2: Stream final spoken response using tool results
+        // Compact tool result before storing in history
+        const compactedResult = compactToolResult(toolResult);
+
+        modelToolCallContent = {
+          role: 'model',
+          parts: [{ functionCall: { name: functionName, args: parsedArgs } }],
+        };
+        userToolResponseContent = {
+          role: 'user',
+          parts: [{ functionResponse: { name: functionName, response: compactedResult } }],
+        };
+
+        const streamContents = [
+          ...conversationHistory,
+          userTurnContent,
+          modelToolCallContent,
+          userToolResponseContent,
+        ];
+
+        // Step 2: Stream final spoken response using compacted tool results & AbortSignal
         responseStream = await ai.models.generateContentStream({
           model: GEMINI_MODEL,
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: turnText }],
-            },
-            {
-              role: 'model',
-              parts: [
-                {
-                  functionCall: {
-                    name: functionName,
-                    args: parsedArgs,
-                  },
-                },
-              ],
-            },
-            {
-              role: 'user',
-              parts: [
-                {
-                  functionResponse: {
-                    name: functionName,
-                    response: toolResult,
-                  },
-                },
-              ],
-            },
-          ],
+          contents: streamContents,
           config: {
             systemInstruction:
               'You are a concise voice shopping assistant. Use the tool results to give a clear, brief spoken response mentioning 2-3 matching products and their prices.',
             temperature: 0.7,
+            maxOutputTokens: 256,
+            abortSignal: finalLlmOp.abortController.signal,
           },
         });
       } else {
@@ -330,10 +338,12 @@ async function main() {
         } else {
           responseStream = await ai.models.generateContentStream({
             model: GEMINI_MODEL,
-            contents: turnText,
+            contents: initialContents,
             config: {
               systemInstruction: 'You are a helpful and concise voice shopping assistant.',
               temperature: 0.7,
+              maxOutputTokens: 256,
+              abortSignal: activeLlmOp.abortController.signal,
             },
           });
         }
@@ -348,8 +358,8 @@ async function main() {
           try {
             let accumulatedText = '';
             for await (const chunk of responseStream) {
-              // Check generation fence for each streaming delta token
-              if (!tracker.isCurrent(activeLlmOp)) {
+              // Check generation fence & abort signal for each streaming delta token
+              if (!tracker.isCurrent(activeLlmOp) || activeLlmOp.abortController.signal.aborted) {
                 console.warn(`[Fenced] Aborting text stream for stale ${activeLlmOp.operation_id} (Gen: ${activeLlmOp.generation_id}, Current: ${tracker.currentGeneration})`);
                 tracker.recordDiscard(activeLlmOp, 'STALE_GENERATION');
                 tracker.recordDiscard(currentTtsOp, 'STALE_GENERATION');
@@ -373,6 +383,26 @@ async function main() {
             controller.close();
             tracker.completeOperation(activeLlmOp);
             tracker.completeOperation(currentTtsOp);
+
+            // Successfully finished current turn without interruption: commit to multi-turn conversation history
+            if (tracker.isCurrent(activeLlmOp) && !activeLlmOp.abortController.signal.aborted) {
+              if (functionCalls && functionCalls.length > 0) {
+                conversationHistory.push(userTurnContent);
+                conversationHistory.push(modelToolCallContent);
+                conversationHistory.push(userToolResponseContent);
+                if (accumulatedText) {
+                  conversationHistory.push({ role: 'model', parts: [{ text: accumulatedText }] });
+                }
+              } else {
+                conversationHistory.push(userTurnContent);
+                if (accumulatedText) {
+                  conversationHistory.push({ role: 'model', parts: [{ text: accumulatedText }] });
+                }
+              }
+              if (conversationHistory.length > 16) {
+                conversationHistory.splice(0, conversationHistory.length - 16);
+              }
+            }
           } catch (err) {
             controller.error(err);
           }
@@ -392,8 +422,23 @@ async function main() {
         });
       }
     } catch (llmError: any) {
+      const isAborted =
+        llmError?.name === 'AbortError' ||
+        llmError?.message === 'Operation aborted' ||
+        activeLlmOp.abortController.signal.aborted ||
+        !tracker.isCurrent(turnGen);
+
+      if (isAborted) {
+        console.log(`[LLM Aborted/Fenced] Operation ${activeLlmOp.operation_id} (Gen: ${turnGen}) was cancelled cleanly.`);
+        tracker.recordCancellation(activeLlmOp, { reason: 'aborted_by_interruption' });
+        if (ttsOp && ttsOp.status === 'running') {
+          tracker.recordCancellation(ttsOp, { reason: 'aborted_by_interruption' });
+        }
+        return;
+      }
+
       console.error('Error in agent conversation turn:', llmError);
-      // INVARIANT: When LLM or Tool throws, cleanly mark operations as failed
+      // INVARIANT: When active LLM or Tool throws, cleanly mark operations as failed
       if (activeLlmOp && activeLlmOp.status === 'running') {
         tracker.recordFailure(activeLlmOp, 'LLM_API_ERROR', { error: llmError?.message || String(llmError) });
       }
@@ -405,6 +450,16 @@ async function main() {
         error: llmError?.message || 'LLM API Error',
         generation_id: turnGen,
       });
+
+      // Spoken fallback for real unhandled errors on the active generation
+      if (tracker.isCurrent(turnGen)) {
+        try {
+          const fallbackMsg = "I'm having trouble retrieving information right now. Please ask again.";
+          currentSpeechHandle = session.say(fallbackMsg);
+        } catch (fallbackErr) {
+          console.warn('Failed to synthesize fallback message:', fallbackErr);
+        }
+      }
     }
   };
 

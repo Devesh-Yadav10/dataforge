@@ -1,6 +1,6 @@
 # Stage 10 Automated Stress Test & Benchmark Results
 
-**Execution Timestamp:** 2026-09-08T14:00:02.645Z  
+**Execution Timestamp:** 2026-09-10T06:54:06.360Z  
 **Total Trials per Implementation:** 100
 
 ---
@@ -17,7 +17,7 @@
 | **Fence Catch Rate** | **100.0%** | **0.0%** | 100% of raced tools caught |
 | **Recovery Success Rate** | **100.0%** | **50.0%** | Complete turn recovery |
 | **Invalidation Latency (Median / P95)** | 0ms / 1ms | 0ms / 1ms | Immediate atomic transition |
-| **New-Response Latency (Median / P95)** | 16ms / 18ms | 15ms / 16ms | Low recovery turn latency |
+| **New-Response Latency (Median / P95)** | 15ms / 16ms | 16ms / 17ms | Low recovery turn latency |
 
 ---
 

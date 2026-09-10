@@ -169,6 +169,24 @@ export interface SearchProductsResult {
   query_params: SearchProductsParams;
 }
 
+export function compactToolResult(result: SearchProductsResult): {
+  total_matches: number;
+  products: Array<{ name: string; brand: string; price: number; ram_gb?: number }>;
+  query_params: SearchProductsParams;
+} {
+  const topProducts = (result.products || []).slice(0, 5).map((p) => ({
+    name: p.name,
+    brand: p.brand,
+    price: p.price,
+    ...(p.ram_gb ? { ram_gb: p.ram_gb } : {}),
+  }));
+  return {
+    total_matches: result.total_matches,
+    products: topProducts,
+    query_params: result.query_params,
+  };
+}
+
 export async function searchProducts(
   params: SearchProductsParams,
   options?: { signal?: AbortSignal; defaultDelayMs?: number }
@@ -176,6 +194,9 @@ export async function searchProducts(
   const delay = params.delayMs ?? options?.defaultDelayMs ?? 4000;
 
   if (delay > 0) {
+    if (options?.signal?.aborted) {
+      throw new Error('Operation aborted');
+    }
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         resolve();

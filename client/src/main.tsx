@@ -2,6 +2,16 @@ import React, { useEffect, useState, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { Room, RoomEvent, Track, type RemoteTrack } from 'livekit-client';
 
+interface Product {
+  id: string;
+  name: string;
+  brand: string;
+  category: 'headphones' | 'laptops' | 'phones';
+  price: number;
+  ram_gb?: number;
+  description: string;
+}
+
 interface OperationState {
   operation_id: string;
   operation_type: 'stt' | 'llm' | 'tool' | 'tts';
@@ -27,6 +37,25 @@ interface ChatMessage {
   text: string;
   generation_id: number;
   timestamp: string;
+  interrupted?: boolean;
+}
+
+interface GenerationStatus {
+  genId: number;
+  status: 'active' | 'interrupted';
+  query?: string;
+}
+
+function formatSearchQuery(args?: Record<string, any>): string {
+  if (!args || Object.keys(args).length === 0) return 'Searching catalog...';
+  const parts: string[] = [];
+  if (args.brand) parts.push(args.brand);
+  if (args.category) parts.push(args.category);
+  else if (args.query) parts.push(`"${args.query}"`);
+  else parts.push('products');
+  if (args.max_price) parts.push(`under $${args.max_price}`);
+  if (args.min_ram_gb) parts.push(`with ${args.min_ram_gb}GB+ RAM`);
+  return `Searching ${parts.join(' ')}...`;
 }
 
 function App() {
@@ -34,26 +63,39 @@ function App() {
   const [connectionState, setConnectionState] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Generation & Session tracking
+  // Generation & Session state
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [currentGeneration, setCurrentGeneration] = useState<number>(1);
+  const [generationsList, setGenerationsList] = useState<GenerationStatus[]>([
+    { genId: 1, status: 'active' }
+  ]);
   const [interruptionCount, setInterruptionCount] = useState<number>(0);
   const [lastInterruptionNotice, setLastInterruptionNotice] = useState<{ oldGen: number; newGen: number; timestamp: string } | null>(null);
 
-  // Active operations & Discards
-  const [operations, setOperations] = useState<Map<string, OperationState>>(new Map());
-  const [activeToolStatus, setActiveToolStatus] = useState<string | null>(null);
+  // Search & Product State
+  const [activeSearchState, setActiveSearchState] = useState<{
+    queryText: string;
+    isSearching: boolean;
+    generation_id: number;
+    wasInterrupted?: boolean;
+  } | null>(null);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [productsGen, setProductsGen] = useState<number>(1);
 
-  // Chat & Speech
+  // Voice & Assistant State
+  const [assistantState, setAssistantState] = useState<'idle' | 'listening' | 'user_speaking' | 'processing' | 'speaking'>('idle');
+  const [isMicMuted, setIsMicMuted] = useState<boolean>(false);
+
+  // Active operations map
+  const [operations, setOperations] = useState<Map<string, OperationState>>(new Map());
+
+  // Chat messages & streaming
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [currentStreamingAssistantText, setCurrentStreamingAssistantText] = useState<{ text: string; gen: number } | null>(null);
 
-  // Lifecycle Event Log (latest 50)
+  // Telemetry & Evidence (collapsible)
   const [eventLog, setEventLog] = useState<EventLogItem[]>([]);
-  const [showEvidence, setShowEvidence] = useState<boolean>(true);
-  const [isMicMuted, setIsMicMuted] = useState<boolean>(false);
-
-  const eventLogEndRef = useRef<HTMLDivElement>(null);
+  const [showTechnicalDetails, setShowTechnicalDetails] = useState<boolean>(false);
 
   const addEventLog = (
     eventType: string,
@@ -81,8 +123,7 @@ function App() {
     setErrorMessage(null);
 
     try {
-      // 1. Fetch short-lived participant token and LiveKit URL from backend
-      addEventLog('token_requested', currentGeneration, undefined, undefined, 'Requesting short-lived participant token from /token');
+      addEventLog('token_requested', currentGeneration, undefined, undefined, 'Acquiring token from server');
       const tokenRes = await fetch('/token');
       if (!tokenRes.ok) {
         const errData = await tokenRes.json().catch(() => ({}));
@@ -94,100 +135,75 @@ function App() {
         throw new Error('Invalid token response from server');
       }
 
-      console.log(`[LiveKit Client] Token received. Connecting to LiveKit URL: ${tokenData.url}...`);
-      addEventLog('token_received', currentGeneration, undefined, undefined, 'Acquired short-lived participant token');
-
-      // 2. Connect to LiveKit using server-provided URL and token
       const newRoom = new Room();
       setRoom(newRoom);
 
-      // Diagnostic event listeners on client Room
-      newRoom.on(RoomEvent.Connected, () => {
-        console.log(`[LiveKit Client] Room Connected! Room: "${newRoom.name}", Local Participant: "${newRoom.localParticipant.identity}" (state: ${newRoom.state})`);
-      });
-
-      newRoom.on(RoomEvent.LocalTrackPublished, (pub) => {
-        console.log(`[LiveKit Client] LocalTrackPublished: sid=${pub.trackSid}, kind=${pub.kind}, source=${pub.source}, muted=${pub.isMuted}, trackLabel="${pub.track?.mediaStreamTrack?.label}"`);
-      });
-
-      newRoom.on(RoomEvent.LocalTrackUnpublished, (pub) => {
-        console.log(`[LiveKit Client] LocalTrackUnpublished: sid=${pub.trackSid}, kind=${pub.kind}`);
-      });
-
       await newRoom.connect(tokenData.url, tokenData.token);
       setConnectionState('connected');
+      setAssistantState('listening');
       addEventLog('room_connected', currentGeneration, undefined, undefined, `Connected to LiveKit room: ${newRoom.name}`);
 
       // Enable microphone
       if (newRoom.localParticipant) {
         try {
-          console.log('[LiveKit Client] Enabling microphone via setMicrophoneEnabled(true)...');
           await newRoom.localParticipant.setMicrophoneEnabled(true);
           setIsMicMuted(false);
-          console.log(`[LiveKit Client] Microphone enabled! isMicrophoneEnabled=${newRoom.localParticipant.isMicrophoneEnabled}, publicationsCount=${newRoom.localParticipant.trackPublications.size}`);
-          newRoom.localParticipant.trackPublications.forEach((pub) => {
-            console.log(` - Publication [${pub.trackSid}]: kind=${pub.kind}, source=${pub.source}, isMuted=${pub.isMuted}, track=${pub.track?.mediaStreamTrack?.label}`);
-          });
-          addEventLog('microphone_enabled', currentGeneration, undefined, undefined, 'Microphone active for voice');
+          addEventLog('microphone_enabled', currentGeneration, undefined, undefined, 'Microphone active');
         } catch (micErr: any) {
-          console.error('[LiveKit Client] Microphone enable error:', micErr);
+          console.error('Microphone enable error:', micErr);
           setErrorMessage(`Microphone permission error: ${micErr.message}`);
         }
       }
 
-      // Sync local microphone mute state with LiveKit events
       newRoom.on(RoomEvent.TrackMuted, (pub, participant) => {
-        console.log(`[LiveKit Client] TrackMuted: ${pub.trackSid} from ${participant?.identity} (isLocal=${participant?.isLocal})`);
         if (participant?.isLocal && pub.kind === Track.Kind.Audio) {
           setIsMicMuted(true);
-          addEventLog('microphone_muted', currentGeneration, undefined, undefined, 'Local microphone track muted');
         }
       });
 
       newRoom.on(RoomEvent.TrackUnmuted, (pub, participant) => {
-        console.log(`[LiveKit Client] TrackUnmuted: ${pub.trackSid} from ${participant?.identity} (isLocal=${participant?.isLocal})`);
         if (participant?.isLocal && pub.kind === Track.Kind.Audio) {
           setIsMicMuted(false);
-          addEventLog('microphone_unmuted', currentGeneration, undefined, undefined, 'Local microphone track unmuted');
         }
       });
 
-      // Audio track subscription (Rime TTS playback)
+      // Rime TTS Audio playout
       newRoom.on(RoomEvent.TrackSubscribed, (track: RemoteTrack) => {
-        console.log(`[LiveKit Client] Remote TrackSubscribed: ${track.sid}, kind=${track.kind}`);
         if (track.kind === Track.Kind.Audio) {
           const el = track.attach();
           document.body.appendChild(el);
-          addEventLog('tts_audio_track_attached', currentGeneration, undefined, 'tts', 'Rime Coda audio track playing');
+          setAssistantState('speaking');
+          addEventLog('tts_audio_playing', currentGeneration, undefined, 'tts', 'Rime Coda voice active');
         }
       });
 
       newRoom.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
-        console.log(`[LiveKit Client] Remote TrackUnsubscribed: ${track.sid}`);
         track.detach().forEach((el) => el.remove());
+        setAssistantState('listening');
       });
 
-      newRoom.on('disconnected', (reason) => {
+      newRoom.on('disconnected', () => {
         setConnectionState('disconnected');
-        addEventLog('room_disconnected', currentGeneration, undefined, undefined, `Reason: ${reason || 'normal'}`);
+        setAssistantState('idle');
       });
 
-      // Listen for data packets from the agent
+      // Handle server data channel messages
       newRoom.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
         try {
           const str = new TextDecoder().decode(payload);
           const data = JSON.parse(str);
 
-          // 1. User Transcript
+          // 1. Transcript (User turn)
           if (data.type === 'transcript' && typeof data.text === 'string') {
             const gen = data.generation_id ?? currentGeneration;
             const isFinal = data.is_final !== false;
             if (data.session_id) setSessionId(data.session_id);
             if (data.generation_id) setCurrentGeneration(data.generation_id);
 
+            setAssistantState(isFinal ? 'processing' : 'user_speaking');
+
             setMessages((prev) => {
               const lastMsg = prev[prev.length - 1];
-              // If the previous message was an interim transcript for this generation, update it
               if (lastMsg && lastMsg.sender === 'user' && lastMsg.id.startsWith('user-interim-')) {
                 const updated = [...prev];
                 updated[updated.length - 1] = {
@@ -216,17 +232,27 @@ function App() {
             }
           }
 
-          // 2. Assistant Text Stream
+          // 2. Streaming Assistant text
           else if (data.type === 'assistant_text' && typeof data.text === 'string') {
             const gen = data.generation_id ?? currentGeneration;
-            setCurrentStreamingAssistantText({ text: data.text, gen });
+            if (gen === currentGeneration) {
+              setAssistantState('speaking');
+              setCurrentStreamingAssistantText({ text: data.text, gen });
+            }
           }
 
-          // 3. Tool Events
+          // 3. Tool execution state & products
           else if (data.type === 'tool_event') {
             const gen = data.generation_id ?? currentGeneration;
             if (data.event === 'tool_started') {
-              setActiveToolStatus(`⏳ Running: ${data.tool} (4s latency simulated) [${data.operation_id ?? 'op'}, Gen: ${gen}]`);
+              const queryLabel = formatSearchQuery(data.arguments);
+              setActiveSearchState({
+                queryText: queryLabel,
+                isSearching: true,
+                generation_id: gen,
+              });
+              setAssistantState('processing');
+
               setOperations((prev) => {
                 const next = new Map(prev);
                 next.set(data.operation_id ?? `tool-${Date.now()}`, {
@@ -234,21 +260,26 @@ function App() {
                   operation_type: 'tool',
                   generation_id: gen,
                   status: 'running',
-                  details: `Query: ${JSON.stringify(data.arguments ?? {})}`,
+                  details: queryLabel,
                 });
                 return next;
               });
-              addEventLog('tool_started', gen, data.operation_id, 'tool', `${data.tool} started`);
+              addEventLog('tool_started', gen, data.operation_id, 'tool', queryLabel);
             } else if (data.event === 'tool_completed') {
-              setActiveToolStatus(`✅ Finished: ${data.tool} (${data.result_count} items matched)`);
+              if (gen === currentGeneration) {
+                setActiveSearchState(null);
+                if (Array.isArray(data.products)) {
+                  setProducts(data.products);
+                  setProductsGen(gen);
+                }
+              }
               setOperations((prev) => {
                 const next = new Map(prev);
                 if (data.operation_id && next.has(data.operation_id)) {
-                  const existing = next.get(data.operation_id)!;
                   next.set(data.operation_id, {
-                    ...existing,
+                    ...next.get(data.operation_id)!,
                     status: 'completed',
-                    details: `Matched ${data.result_count} products`,
+                    details: `Matched ${data.result_count} items`,
                   });
                 }
                 return next;
@@ -257,16 +288,16 @@ function App() {
             }
           }
 
-          // 4. Tracker Events
+          // 4. Tracker Events (Fencing & Interruptions)
           else if (data.type === 'tracker_event') {
             const ev = data.event;
             if (ev?.session_id) setSessionId(ev.session_id);
-            if (ev?.generation_id) setCurrentGeneration(ev.generation_id);
 
-            // Interruption detected
+            // Interruption handling
             if (ev?.event_type === 'interruption_detected') {
               const oldG = ev.details?.interrupted_generation ?? currentGeneration;
               const newG = ev.details?.new_generation ?? currentGeneration + 1;
+
               setCurrentGeneration(newG);
               setInterruptionCount((c) => c + 1);
               setLastInterruptionNotice({
@@ -274,8 +305,40 @@ function App() {
                 newGen: newG,
                 timestamp: new Date().toLocaleTimeString(),
               });
-              setActiveToolStatus(null);
+
+              // Mark previous generation as interrupted in generation history
+              setGenerationsList((prev) => {
+                const updated = prev.map((item) =>
+                  item.genId === oldG ? { ...item, status: 'interrupted' as const } : item
+                );
+                if (!updated.some((item) => item.genId === newG)) {
+                  updated.push({ genId: newG, status: 'active' });
+                }
+                return updated;
+              });
+
+              // Mark previous user messages as interrupted visually
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.generation_id === oldG ? { ...msg, interrupted: true } : msg
+                )
+              );
+
+              // Update active search state indicator to "Request updated"
+              setActiveSearchState((prev) => {
+                if (prev && prev.generation_id === oldG) {
+                  return {
+                    queryText: '⚡ Request updated (stale query cancelled)',
+                    isSearching: false,
+                    generation_id: oldG,
+                    wasInterrupted: true,
+                  };
+                }
+                return prev;
+              });
+
               setCurrentStreamingAssistantText(null);
+              setAssistantState('user_speaking');
 
               addEventLog(
                 'interruption_detected',
@@ -316,23 +379,26 @@ function App() {
               });
               addEventLog('operation_completed', ev.generation_id, ev.operation_id, ev.operation_type);
 
-              // If final TTS completed, commit streaming text to messages
+              // Commit text stream to message list when TTS completes
               if (ev.operation_type === 'tts' && currentStreamingAssistantText) {
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    id: `assistant-${Date.now()}`,
-                    sender: 'assistant',
-                    text: currentStreamingAssistantText.text,
-                    generation_id: currentStreamingAssistantText.gen,
-                    timestamp: new Date().toLocaleTimeString(),
-                  },
-                ]);
+                if (currentStreamingAssistantText.gen === currentGeneration) {
+                  setMessages((prev) => [
+                    ...prev,
+                    {
+                      id: `assistant-${Date.now()}`,
+                      sender: 'assistant',
+                      text: currentStreamingAssistantText.text,
+                      generation_id: currentStreamingAssistantText.gen,
+                      timestamp: new Date().toLocaleTimeString(),
+                    },
+                  ]);
+                }
                 setCurrentStreamingAssistantText(null);
+                setAssistantState('listening');
               }
             }
 
-            // Operation discarded by generation fence
+            // Operation discarded (Generation Fenced)
             else if (ev?.event_type === 'operation_discarded') {
               setOperations((prev) => {
                 const next = new Map(prev);
@@ -341,7 +407,7 @@ function App() {
                   operation_type: ev.operation_type,
                   generation_id: ev.generation_id,
                   status: 'discarded',
-                  details: `Discard Reason: ${ev.details?.reason ?? 'STALE_GENERATION'}`,
+                  details: `Fence: ${ev.details?.reason ?? 'STALE_GENERATION'}`,
                 });
                 return next;
               });
@@ -363,7 +429,7 @@ function App() {
                   next.set(ev.operation_id, {
                     ...next.get(ev.operation_id)!,
                     status: 'cancelled',
-                    details: 'Aborted by signal',
+                    details: 'Aborted via signal',
                   });
                 }
                 return next;
@@ -387,6 +453,7 @@ function App() {
       room.disconnect();
       setRoom(null);
       setConnectionState('disconnected');
+      setAssistantState('idle');
       addEventLog('user_initiated_disconnect', currentGeneration);
     }
   };
@@ -395,58 +462,67 @@ function App() {
     if (room?.localParticipant) {
       try {
         const currentlyEnabled = room.localParticipant.isMicrophoneEnabled;
-        const targetEnabled = !currentlyEnabled;
-        await room.localParticipant.setMicrophoneEnabled(targetEnabled);
-        setIsMicMuted(!targetEnabled);
-        console.log(`[Microphone Toggle] Changed isMicrophoneEnabled to: ${targetEnabled}`);
+        await room.localParticipant.setMicrophoneEnabled(!currentlyEnabled);
+        setIsMicMuted(currentlyEnabled);
       } catch (err: any) {
-        console.error('Failed to toggle microphone:', err);
         setErrorMessage(`Microphone toggle error: ${err.message}`);
       }
     }
   };
 
   return (
-    <div style={{ fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', maxWidth: '1080px', margin: '0 auto', padding: '20px', color: '#1a1a1a' }}>
+    <div style={{ fontFamily: 'Inter, system-ui, -apple-system, sans-serif', background: '#f4f6f9', minHeight: '100vh', color: '#1e293b' }}>
       
-      {/* HEADER */}
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #e0e0e0', paddingBottom: '16px', marginBottom: '20px' }}>
-        <div>
-          <h1 style={{ margin: '0 0 6px 0', fontSize: '24px', fontWeight: '700' }}>
-            🎙️ Voice Shopping Assistant <span style={{ fontSize: '14px', background: '#0066cc', color: '#fff', padding: '2px 8px', borderRadius: '12px', verticalAlign: 'middle' }}>Rime Coda</span>
-          </h1>
-          <p style={{ margin: 0, color: '#666', fontSize: '14px' }}>
-            Demonstrating <strong>Generation Fencing</strong> for Realtime Interruption & Async Recovery
-          </p>
+      {/* APP HEADER */}
+      <header style={{ background: '#0f172a', color: '#fff', padding: '16px 28px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div style={{ background: 'linear-gradient(135deg, #3b82f6, #6366f1)', padding: '8px 12px', borderRadius: '10px', fontSize: '20px', fontWeight: 'bold', boxShadow: '0 2px 8px rgba(59,130,246,0.4)' }}>
+            🛒
+          </div>
+          <div>
+            <h1 style={{ margin: 0, fontSize: '20px', fontWeight: '800', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              DataForge Voice Shopping
+              <span style={{ fontSize: '11px', background: '#3b82f6', color: '#fff', padding: '3px 8px', borderRadius: '12px', fontWeight: '600', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                Rime TTS + Generation Fencing
+              </span>
+            </h1>
+            <p style={{ margin: '2px 0 0 0', fontSize: '13px', color: '#94a3b8' }}>
+              Realtime Interruption-Tolerant Voice Assistant
+            </p>
+          </div>
         </div>
 
-        {/* CONNECTION BUTTONS */}
-        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+        {/* CONNECTION ACTIONS */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           {connectionState === 'connected' ? (
             <>
               <button
                 onClick={toggleMic}
                 style={{
-                  padding: '8px 14px',
-                  background: isMicMuted ? '#d32f2f' : '#2e7d32',
+                  padding: '8px 16px',
+                  background: isMicMuted ? '#ef4444' : '#10b981',
                   color: '#fff',
                   border: 'none',
-                  borderRadius: '6px',
+                  borderRadius: '8px',
                   cursor: 'pointer',
                   fontWeight: '600',
                   fontSize: '13px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  boxShadow: '0 2px 6px rgba(0,0,0,0.15)',
                 }}
               >
-                {isMicMuted ? '🔇 Microphone Muted (Click to Unmute)' : '🎙️ Microphone Active (Click to Mute)'}
+                {isMicMuted ? '🔇 Muted' : '🎙️ Mic On'}
               </button>
               <button
                 onClick={handleDisconnect}
                 style={{
-                  padding: '8px 14px',
-                  background: '#d32f2f',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: '6px',
+                  padding: '8px 16px',
+                  background: '#334155',
+                  color: '#f8fafc',
+                  border: '1px solid #475569',
+                  borderRadius: '8px',
                   cursor: 'pointer',
                   fontWeight: '600',
                   fontSize: '13px',
@@ -460,333 +536,476 @@ function App() {
               onClick={connectToRoom}
               disabled={connectionState === 'connecting'}
               style={{
-                padding: '10px 18px',
-                background: connectionState === 'connecting' ? '#999' : '#0066cc',
+                padding: '10px 20px',
+                background: connectionState === 'connecting' ? '#64748b' : 'linear-gradient(135deg, #2563eb, #3b82f6)',
                 color: '#fff',
                 border: 'none',
-                borderRadius: '6px',
+                borderRadius: '8px',
                 cursor: connectionState === 'connecting' ? 'not-allowed' : 'pointer',
-                fontWeight: '600',
+                fontWeight: '700',
                 fontSize: '14px',
+                boxShadow: '0 4px 12px rgba(37,99,235,0.3)',
               }}
             >
-              {connectionState === 'connecting' ? 'Connecting to Room...' : 'Connect to Assistant'}
+              {connectionState === 'connecting' ? 'Connecting to Voice...' : '🔌 Connect Voice Assistant'}
             </button>
           )}
         </div>
       </header>
 
-      {/* ERROR NOTICE */}
-      {errorMessage && (
-        <div style={{ background: '#ffebee', color: '#c62828', padding: '12px', borderRadius: '6px', marginBottom: '16px', border: '1px solid #ef9a9a' }}>
-          <strong>Error:</strong> {errorMessage}
-        </div>
-      )}
-
-      {/* GENERATION & SESSION TELEMETRY BAR */}
-      <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', background: '#f8f9fa', padding: '14px', borderRadius: '8px', border: '1px solid #e9ecef', marginBottom: '20px' }}>
-        <div>
-          <div style={{ fontSize: '11px', textTransform: 'uppercase', color: '#6c757d', fontWeight: '700' }}>Active Generation</div>
-          <div style={{ fontSize: '20px', fontWeight: '800', color: '#0066cc' }}>
-            Gen {currentGeneration} <span style={{ fontSize: '12px', fontWeight: 'normal', color: '#28a745' }}>(Active Owner)</span>
-          </div>
-        </div>
-        <div>
-          <div style={{ fontSize: '11px', textTransform: 'uppercase', color: '#6c757d', fontWeight: '700' }}>Session Identifier</div>
-          <div style={{ fontSize: '13px', fontWeight: '600', fontFamily: 'monospace', color: '#333' }}>
-            {sessionId ?? 'Awaiting Connection...'}
-          </div>
-        </div>
-        <div>
-          <div style={{ fontSize: '11px', textTransform: 'uppercase', color: '#6c757d', fontWeight: '700' }}>Connection State</div>
-          <div style={{ fontSize: '14px', fontWeight: '600', color: connectionState === 'connected' ? '#2e7d32' : '#d32f2f' }}>
-            ● {connectionState.toUpperCase()}
-          </div>
-        </div>
-        <div>
-          <div style={{ fontSize: '11px', textTransform: 'uppercase', color: '#6c757d', fontWeight: '700' }}>Total Interruptions</div>
-          <div style={{ fontSize: '18px', fontWeight: '700', color: interruptionCount > 0 ? '#e65100' : '#666' }}>
-            {interruptionCount} {interruptionCount > 0 && '⚡'}
-          </div>
-        </div>
-      </section>
-
-      {/* RECENT BARGE-IN ALERT BANNER */}
-      {lastInterruptionNotice && (
-        <div style={{ background: '#fff3e0', border: '1px solid #ffe0b2', borderLeft: '5px solid #ff9800', padding: '12px 16px', borderRadius: '6px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div>
-            <strong>⚡ Barge-In Interruption Handled:</strong> Obsoleted <strong>Gen {lastInterruptionNotice.oldGen}</strong> ➔ Switched to <strong>Gen {lastInterruptionNotice.newGen}</strong>. Stale operations fenced.
-          </div>
-          <span style={{ fontSize: '12px', color: '#888' }}>{lastInterruptionNotice.timestamp}</span>
-        </div>
-      )}
-
-      {/* MAIN TWO-COLUMN WORKSPACE: LEFT (CONVERSATION & TOOLS) / RIGHT (OPERATIONS & EVENT TIMELINE) */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '20px' }}>
+      <main style={{ maxWidth: '1200px', margin: '24px auto', padding: '0 20px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
         
-        {/* LEFT COLUMN: CONVERSATION & DEMO SCENARIOS */}
-        <div>
+        {/* ERROR DISPLAY */}
+        {errorMessage && (
+          <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', color: '#991b1b', padding: '14px 18px', borderRadius: '10px', fontWeight: '500' }}>
+            ⚠️ {errorMessage}
+          </div>
+        )}
+
+        {/* TOP HERO & VOICE CONTROL PANEL */}
+        <section style={{ background: '#fff', borderRadius: '16px', border: '1px solid #e2e8f0', padding: '24px 32px', boxShadow: '0 4px 16px rgba(0,0,0,0.03)', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', position: 'relative', overflow: 'hidden' }}>
           
-          {/* DEMO PROMPT HELPER CARDS */}
-          <div style={{ background: '#e8f4fd', border: '1px solid #b6e0fe', padding: '12px', borderRadius: '8px', marginBottom: '16px' }}>
-            <div style={{ fontWeight: '700', fontSize: '13px', color: '#004085', marginBottom: '6px' }}>
-              💡 Live Demo Scenarios (Speak or Test Barge-in):
-            </div>
-            <div style={{ fontSize: '12px', lineHeight: '1.5', color: '#004085' }}>
-              <div><strong>Scenario A (Speech Barge-In):</strong> Say <em>"Find me headphones under $200"</em> ➔ Interrupt while speaking with <em>"Actually, show me only Bose."</em></div>
-              <div style={{ marginTop: '4px' }}><strong>Scenario B (Async Tool Race):</strong> Say <em>"Find me a laptop under $1000"</em> ➔ Interrupt during the 4s tool delay with <em>"Actually, under $800 with 16GB RAM."</em></div>
+          {/* BACKGROUND GLOW */}
+          <div style={{ position: 'absolute', top: '-50px', left: '50%', transform: 'translateX(-50%)', width: '300px', height: '150px', background: assistantState === 'speaking' ? 'rgba(16, 185, 129, 0.12)' : assistantState === 'user_speaking' ? 'rgba(59, 130, 246, 0.12)' : 'rgba(99, 102, 241, 0.08)', filter: 'blur(50px)', borderRadius: '50%', pointerEvents: 'none' }} />
+
+          {/* MAIN MIC HERO BUTTON */}
+          <div style={{ marginBottom: '16px', position: 'relative' }}>
+            <div
+              onClick={() => {
+                if (connectionState === 'disconnected') connectToRoom();
+                else toggleMic();
+              }}
+              style={{
+                width: '90px',
+                height: '90px',
+                borderRadius: '50%',
+                background: connectionState !== 'connected'
+                  ? '#cbd5e1'
+                  : assistantState === 'speaking'
+                  ? 'linear-gradient(135deg, #10b981, #059669)'
+                  : assistantState === 'user_speaking'
+                  ? 'linear-gradient(135deg, #3b82f6, #1d4ed8)'
+                  : assistantState === 'processing'
+                  ? 'linear-gradient(135deg, #f59e0b, #d97706)'
+                  : isMicMuted
+                  ? '#ef4444'
+                  : 'linear-gradient(135deg, #6366f1, #4f46e5)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '36px',
+                color: '#fff',
+                cursor: 'pointer',
+                boxShadow: assistantState !== 'idle'
+                  ? '0 0 0 12px rgba(99, 102, 241, 0.15), 0 8px 24px rgba(0,0,0,0.15)'
+                  : '0 8px 20px rgba(0,0,0,0.1)',
+                transition: 'all 0.3s ease',
+                margin: '0 auto',
+              }}
+            >
+              {connectionState !== 'connected' ? '🔌' : isMicMuted ? '🔇' : assistantState === 'speaking' ? '🔊' : assistantState === 'user_speaking' ? '🗣️' : assistantState === 'processing' ? '⚙️' : '🎙️'}
             </div>
           </div>
 
-          {/* ACTIVE TOOL STATUS BAR */}
-          {activeToolStatus && (
-            <div style={{ background: '#fff8e1', border: '1px solid #ffe57f', padding: '10px 14px', borderRadius: '6px', marginBottom: '16px', fontSize: '13px', fontWeight: '600', color: '#ff6f00' }}>
-              {activeToolStatus}
-            </div>
-          )}
+          {/* VOICE ASSISTANT STATUS TITLE */}
+          <div style={{ marginBottom: '12px' }}>
+            <h2 style={{ margin: '0 0 4px 0', fontSize: '22px', fontWeight: '800', color: '#0f172a' }}>
+              {connectionState !== 'connected'
+                ? 'Voice Shopping Assistant Offline'
+                : assistantState === 'user_speaking'
+                ? 'Listening to User Speech...'
+                : assistantState === 'processing'
+                ? 'Processing Request & Catalog Search...'
+                : assistantState === 'speaking'
+                ? 'Speaking via Rime Coda TTS...'
+                : 'Listening for Voice Commands...'}
+            </h2>
+            <p style={{ margin: 0, fontSize: '14px', color: '#64748b' }}>
+              Speak naturally into your microphone to find laptops, headphones, or phones. Interruption-safe with Generation Fencing.
+            </p>
+          </div>
 
-          {/* CONVERSATION TRANSCRIPTS */}
-          <div style={{ border: '1px solid #dee2e6', borderRadius: '8px', padding: '16px', minHeight: '340px', maxHeight: '480px', overflowY: 'auto', background: '#fff' }}>
-            <div style={{ fontSize: '13px', fontWeight: '700', borderBottom: '1px solid #eee', paddingBottom: '8px', marginBottom: '12px', color: '#555' }}>
-              💬 Live Turn Transcript
-            </div>
-
-            {messages.length === 0 && !currentStreamingAssistantText && (
-              <div style={{ textAlign: 'center', color: '#888', marginTop: '60px', fontSize: '14px' }}>
-                {connectionState === 'connected' ? '🎙️ Speak into microphone to start conversation...' : 'Click "Connect to Assistant" above to begin.'}
-              </div>
-            )}
-
-            {messages.map((msg) => (
+          {/* GENERATION FENCING STATUS BADGES BAR */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '10px', marginTop: '8px' }}>
+            {/* GENERATION CHIPS */}
+            {generationsList.map((g) => (
               <div
-                key={msg.id}
+                key={g.genId}
                 style={{
-                  marginBottom: '14px',
+                  padding: '5px 12px',
+                  borderRadius: '20px',
+                  fontSize: '12px',
+                  fontWeight: '700',
+                  background: g.status === 'active' ? '#dbeafe' : '#fee2e2',
+                  color: g.status === 'active' ? '#1e40af' : '#991b1b',
+                  border: `1px solid ${g.status === 'active' ? '#bfdbfe' : '#fca5a5'}`,
                   display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: msg.sender === 'user' ? 'flex-end' : 'flex-start',
+                  alignItems: 'center',
+                  gap: '6px',
                 }}
               >
-                <div style={{ fontSize: '11px', color: '#888', marginBottom: '2px' }}>
-                  {msg.sender === 'user' ? 'User' : 'Rime Coda Assistant'} • <span style={{ fontWeight: '600', color: msg.generation_id === currentGeneration ? '#0066cc' : '#999' }}>Gen {msg.generation_id}</span> • {msg.timestamp}
-                </div>
-                <div
-                  style={{
-                    padding: '10px 14px',
-                    borderRadius: '10px',
-                    maxWidth: '85%',
-                    fontSize: '14px',
-                    lineHeight: '1.4',
-                    background: msg.sender === 'user' ? '#e3f2fd' : '#f1f8e9',
-                    color: msg.sender === 'user' ? '#0d47a1' : '#1b5e20',
-                    border: msg.generation_id !== currentGeneration ? '1px dashed #bbb' : 'none',
-                  }}
-                >
-                  {msg.text}
-                </div>
+                <span>{g.status === 'active' ? '🟢' : '⚡'} Gen {g.genId}</span>
+                <span style={{ fontSize: '10px', textTransform: 'uppercase', opacity: 0.8 }}>
+                  ({g.status})
+                </span>
               </div>
             ))}
 
-            {/* LIVE STREAMING RESPONSE */}
-            {currentStreamingAssistantText && (
-              <div style={{ marginBottom: '14px', display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-                <div style={{ fontSize: '11px', color: '#0066cc', marginBottom: '2px', fontWeight: '700' }}>
-                  ⚡ Streaming Assistant (Gen {currentStreamingAssistantText.gen}) • Speaking via Rime...
-                </div>
-                <div
-                  style={{
-                    padding: '10px 14px',
-                    borderRadius: '10px',
-                    maxWidth: '85%',
-                    fontSize: '14px',
-                    lineHeight: '1.4',
-                    background: '#f1f8e9',
-                    color: '#1b5e20',
-                    border: '1px solid #c8e6c9',
-                  }}
-                >
-                  {currentStreamingAssistantText.text}
-                  <span style={{ display: 'inline-block', width: '6px', height: '14px', background: '#2e7d32', marginLeft: '4px', verticalAlign: 'middle', animation: 'blink 1s infinite' }} />
-                </div>
+            {/* ENGINEERING GUARANTEE PILLS */}
+            <div style={{ padding: '5px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: '600', background: '#f1f5f9', color: '#334155', border: '1px solid #cbd5e1' }}>
+              ✓ Stale Results Blocked
+            </div>
+            <div style={{ padding: '5px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: '600', background: '#f1f5f9', color: '#334155', border: '1px solid #cbd5e1' }}>
+              ✓ Obsolete Request Cancelled
+            </div>
+            {interruptionCount > 0 && (
+              <div style={{ padding: '5px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: '700', background: '#fff7ed', color: '#c2410c', border: '1px solid #ffedd5' }}>
+                ⚡ {interruptionCount} Interruption{interruptionCount > 1 ? 's' : ''} Recovered
               </div>
             )}
           </div>
-        </div>
+        </section>
 
-        {/* RIGHT COLUMN: OPERATIONS & FENCING VISIBILITY */}
-        <div>
+        {/* BARGE-IN INTERRUPTION ALERT BANNER */}
+        {lastInterruptionNotice && (
+          <div style={{ background: 'linear-gradient(90deg, #fff7ed, #fff)', border: '1px solid #ffedd5', borderLeft: '6px solid #f97316', padding: '14px 20px', borderRadius: '12px', boxShadow: '0 2px 8px rgba(249,115,22,0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontSize: '14px', color: '#9a3412', fontWeight: '500' }}>
+              <strong style={{ fontWeight: '800' }}>⚡ Interruption Detected & Fenced:</strong> Obsoleted <strong>Gen {lastInterruptionNotice.oldGen}</strong> ➔ Switched to <strong>Gen {lastInterruptionNotice.newGen}</strong>. Previous in-flight search and speech aborted immediately.
+            </div>
+            <span style={{ fontSize: '12px', color: '#c2410c', fontWeight: '600' }}>{lastInterruptionNotice.timestamp}</span>
+          </div>
+        )}
+
+        {/* ACTIVE SEARCH & PROCESSING BANNER */}
+        {activeSearchState && (
+          <div
+            style={{
+              background: activeSearchState.wasInterrupted ? '#fef2f2' : '#f0fdf4',
+              border: `1px solid ${activeSearchState.wasInterrupted ? '#fca5a5' : '#86efac'}`,
+              padding: '14px 20px',
+              borderRadius: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.03)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <span style={{ fontSize: '20px' }}>{activeSearchState.wasInterrupted ? '⚡' : '🔎'}</span>
+              <div>
+                <div style={{ fontWeight: '700', fontSize: '14px', color: activeSearchState.wasInterrupted ? '#991b1b' : '#166534' }}>
+                  {activeSearchState.queryText}
+                </div>
+                <div style={{ fontSize: '12px', color: activeSearchState.wasInterrupted ? '#b91c1c' : '#15803d' }}>
+                  {activeSearchState.wasInterrupted
+                    ? 'Gen ' + activeSearchState.generation_id + ' query cancelled due to user barge-in'
+                    : 'Searching local product catalog (~4s simulated async delay under Gen ' + activeSearchState.generation_id + ')...'}
+                </div>
+              </div>
+            </div>
+            {activeSearchState.isSearching && (
+              <div style={{ fontSize: '12px', fontWeight: '600', color: '#15803d', background: '#dcfce7', padding: '4px 10px', borderRadius: '12px' }}>
+                Catalog Search Running...
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TWO COLUMN CONTENT LAYOUT: LEFT (CONVERSATION TRANSCRIPT) / RIGHT (PRODUCT RESULTS) */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 1fr', gap: '24px' }}>
           
-          {/* OPERATION TRACKER PANEL */}
-          <div style={{ border: '1px solid #dee2e6', borderRadius: '8px', padding: '14px', background: '#fff', marginBottom: '16px' }}>
-            <div style={{ fontSize: '13px', fontWeight: '700', borderBottom: '1px solid #eee', paddingBottom: '6px', marginBottom: '10px', color: '#333', display: 'flex', justifyContent: 'space-between' }}>
-              <span>⚙️ Operation Tracking & Fencing</span>
-              <span style={{ fontSize: '11px', color: '#666' }}>Active Gen: {currentGeneration}</span>
+          {/* CONVERSATION TRANSCRIPT PANEL */}
+          <section style={{ background: '#fff', borderRadius: '16px', border: '1px solid #e2e8f0', padding: '20px', boxShadow: '0 4px 16px rgba(0,0,0,0.03)', display: 'flex', flexDirection: 'column', height: '520px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #f1f5f9', paddingBottom: '12px', marginBottom: '14px' }}>
+              <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '700', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                💬 Voice Conversation Transcript
+              </h3>
+              <span style={{ fontSize: '12px', color: '#64748b', fontWeight: '500' }}>
+                Gen {currentGeneration} Active
+              </span>
             </div>
 
-            {operations.size === 0 ? (
-              <div style={{ fontSize: '12px', color: '#999', padding: '10px 0', textAlign: 'center' }}>
-                No active operations yet.
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '180px', overflowY: 'auto' }}>
-                {Array.from(operations.values()).slice(-6).map((op) => {
-                  const isCurrent = op.generation_id === currentGeneration;
-                  return (
-                    <div
-                      key={op.operation_id}
-                      style={{
-                        padding: '8px 10px',
-                        borderRadius: '6px',
-                        fontSize: '12px',
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        background: op.status === 'discarded' ? '#ffebee' : isCurrent ? '#f0f9ff' : '#f5f5f5',
-                        borderLeft: `4px solid ${
-                          op.status === 'discarded' ? '#d32f2f' : op.status === 'running' ? '#0066cc' : '#2e7d32'
-                        }`,
-                      }}
-                    >
-                      <div>
-                        <span style={{ fontWeight: '700', textTransform: 'uppercase' }}>{op.operation_type}</span>{' '}
-                        <span style={{ fontFamily: 'monospace', color: '#555' }}>[{op.operation_id}]</span>{' '}
-                        <span style={{ fontWeight: '600', color: isCurrent ? '#0066cc' : '#999' }}>Gen {op.generation_id}</span>
-                        {op.details && <div style={{ fontSize: '11px', color: '#666', marginTop: '2px' }}>{op.details}</div>}
-                      </div>
-                      <span
-                        style={{
-                          fontSize: '10px',
-                          fontWeight: '700',
-                          padding: '2px 6px',
-                          borderRadius: '4px',
-                          background:
-                            op.status === 'discarded'
-                              ? '#d32f2f'
-                              : op.status === 'running'
-                              ? '#0066cc'
-                              : '#2e7d32',
-                          color: '#fff',
-                        }}
-                      >
-                        {op.status === 'discarded' ? '🛡️ DISCARDED' : op.status.toUpperCase()}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* REALTIME EVENT LOG */}
-          <div style={{ border: '1px solid #dee2e6', borderRadius: '8px', padding: '14px', background: '#fff' }}>
-            <div style={{ fontSize: '13px', fontWeight: '700', borderBottom: '1px solid #eee', paddingBottom: '6px', marginBottom: '8px', color: '#333' }}>
-              📜 Lifecycle Event Stream (Latest 50)
-            </div>
-            <div style={{ maxHeight: '220px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              {eventLog.length === 0 ? (
-                <div style={{ fontSize: '12px', color: '#999', textAlign: 'center', padding: '10px 0' }}>
-                  No lifecycle events recorded yet.
+            {/* MESSAGES LIST */}
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '14px', paddingRight: '4px' }}>
+              {messages.length === 0 && !currentStreamingAssistantText && (
+                <div style={{ textAlign: 'center', color: '#94a3b8', margin: 'auto 0', padding: '40px 20px' }}>
+                  <div style={{ fontSize: '32px', marginBottom: '12px' }}>🎙️</div>
+                  <div style={{ fontWeight: '600', fontSize: '15px', color: '#475569', marginBottom: '6px' }}>Ready for Voice Input</div>
+                  <p style={{ margin: 0, fontSize: '13px' }}>
+                    Connect and speak into your microphone. Try asking: <br />
+                    <em>"Find me headphones under $200"</em>
+                  </p>
                 </div>
-              ) : (
-                eventLog.map((ev) => (
+              )}
+
+              {messages.map((msg) => {
+                const isCurrentGen = msg.generation_id === currentGeneration;
+                const isUser = msg.sender === 'user';
+                return (
                   <div
-                    key={ev.id}
+                    key={msg.id}
                     style={{
-                      fontSize: '11px',
-                      fontFamily: 'monospace',
-                      padding: '4px 8px',
-                      borderRadius: '4px',
-                      background: ev.is_stale_or_discarded ? '#fff3e0' : '#fafafa',
-                      color: ev.is_stale_or_discarded ? '#d84315' : '#333',
-                      borderLeft: ev.is_stale_or_discarded ? '3px solid #ff5722' : '1px solid #eee',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: isUser ? 'flex-end' : 'flex-start',
+                      opacity: msg.interrupted ? 0.65 : 1,
                     }}
                   >
-                    <span style={{ color: '#888' }}>[{ev.timestamp}]</span>{' '}
-                    <span style={{ fontWeight: '700' }}>{ev.event_type}</span>{' '}
-                    {ev.generation_id !== undefined && ev.generation_id !== null && <span>(Gen {ev.generation_id})</span>}{' '}
-                    {ev.details && <span style={{ color: '#555' }}>- {ev.details}</span>}
+                    <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '3px', display: 'flex', gap: '6px', alignItems: 'center' }}>
+                      <span style={{ fontWeight: '600' }}>{isUser ? 'User' : 'Voice Assistant'}</span>
+                      <span>•</span>
+                      <span
+                        style={{
+                          padding: '1px 6px',
+                          borderRadius: '8px',
+                          fontWeight: '700',
+                          background: isCurrentGen ? '#dbeafe' : '#f1f5f9',
+                          color: isCurrentGen ? '#1d4ed8' : '#64748b',
+                        }}
+                      >
+                        Gen {msg.generation_id}
+                      </span>
+                      {msg.interrupted && (
+                        <span style={{ color: '#dc2626', fontWeight: '700', background: '#fef2f2', padding: '1px 6px', borderRadius: '8px' }}>
+                          ⚡ Interrupted
+                        </span>
+                      )}
+                      <span>• {msg.timestamp}</span>
+                    </div>
+
+                    <div
+                      style={{
+                        padding: '12px 16px',
+                        borderRadius: isUser ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
+                        maxWidth: '85%',
+                        fontSize: '14px',
+                        lineHeight: '1.5',
+                        background: isUser ? '#2563eb' : '#f8fafc',
+                        color: isUser ? '#ffffff' : '#0f172a',
+                        border: isUser ? 'none' : '1px solid #e2e8f0',
+                        boxShadow: isUser ? '0 2px 8px rgba(37,99,235,0.2)' : '0 2px 4px rgba(0,0,0,0.02)',
+                        textDecoration: msg.interrupted ? 'line-through' : 'none',
+                      }}
+                    >
+                      {msg.text}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* STREAMING ASSISTANT TEXT */}
+              {currentStreamingAssistantText && (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+                  <div style={{ fontSize: '11px', color: '#2563eb', marginBottom: '3px', fontWeight: '700', display: 'flex', gap: '6px', alignItems: 'center' }}>
+                    <span>⚡ Assistant Streaming (Rime TTS)</span>
+                    <span>• Gen {currentStreamingAssistantText.gen}</span>
+                  </div>
+                  <div
+                    style={{
+                      padding: '12px 16px',
+                      borderRadius: '16px 16px 16px 4px',
+                      maxWidth: '85%',
+                      fontSize: '14px',
+                      lineHeight: '1.5',
+                      background: '#eff6ff',
+                      color: '#1e40af',
+                      border: '1px solid #bfdbfe',
+                    }}
+                  >
+                    {currentStreamingAssistantText.text}
+                    <span style={{ display: 'inline-block', width: '6px', height: '14px', background: '#2563eb', marginLeft: '4px', verticalAlign: 'middle', animation: 'pulse 1s infinite' }} />
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* SHOPPING CATALOG & PRODUCT RESULTS PANEL */}
+          <section style={{ background: '#fff', borderRadius: '16px', border: '1px solid #e2e8f0', padding: '20px', boxShadow: '0 4px 16px rgba(0,0,0,0.03)', display: 'flex', flexDirection: 'column', height: '520px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #f1f5f9', paddingBottom: '12px', marginBottom: '14px' }}>
+              <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '700', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                🛍️ Verified Product Results
+              </h3>
+              {products.length > 0 && (
+                <span style={{ fontSize: '12px', background: '#f0fdf4', color: '#166534', border: '1px solid #bbf7d0', padding: '3px 10px', borderRadius: '12px', fontWeight: '600' }}>
+                  {products.length} Products • Gen {productsGen}
+                </span>
+              )}
+            </div>
+
+            {/* PRODUCT CARDS LIST */}
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: '4px' }}>
+              {products.length === 0 ? (
+                <div style={{ textAlign: 'center', color: '#94a3b8', margin: 'auto 0', padding: '40px 20px' }}>
+                  <div style={{ fontSize: '36px', marginBottom: '12px' }}>🛒</div>
+                  <div style={{ fontWeight: '600', fontSize: '15px', color: '#475569', marginBottom: '4px' }}>No Active Product Search</div>
+                  <p style={{ margin: 0, fontSize: '13px' }}>
+                    Ask the voice assistant to search for products (e.g. <em>"Find Bose headphones under $300"</em>).
+                  </p>
+                </div>
+              ) : (
+                products.map((p) => (
+                  <div
+                    key={p.id}
+                    style={{
+                      background: '#f8fafc',
+                      border: '1px solid #e2e8f0',
+                      borderRadius: '12px',
+                      padding: '14px 16px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      transition: 'all 0.2s ease',
+                      boxShadow: '0 2px 4px rgba(0,0,0,0.02)',
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                        <span style={{ fontSize: '11px', fontWeight: '700', background: '#3b82f6', color: '#fff', padding: '2px 8px', borderRadius: '6px', textTransform: 'uppercase' }}>
+                          {p.brand}
+                        </span>
+                        <span style={{ fontSize: '11px', color: '#64748b', textTransform: 'capitalize' }}>
+                          {p.category}
+                        </span>
+                        {p.ram_gb && (
+                          <span style={{ fontSize: '11px', background: '#e2e8f0', color: '#334155', padding: '2px 6px', borderRadius: '4px', fontWeight: '600' }}>
+                            {p.ram_gb}GB RAM
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontWeight: '700', fontSize: '15px', color: '#0f172a', marginBottom: '4px' }}>
+                        {p.name}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#64748b', lineHeight: '1.4', maxWidth: '320px' }}>
+                        {p.description}
+                      </div>
+                    </div>
+
+                    <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
+                      <div style={{ fontSize: '20px', fontWeight: '800', color: '#059669' }}>
+                        ${p.price}
+                      </div>
+                      <span style={{ fontSize: '11px', background: '#dcfce7', color: '#15803d', padding: '3px 8px', borderRadius: '6px', fontWeight: '600' }}>
+                        In Stock
+                      </span>
+                    </div>
                   </div>
                 ))
               )}
-              <div ref={eventLogEndRef} />
             </div>
-          </div>
-        </div>
-      </div>
-
-      {/* COLLAPSIBLE EMPIRICAL BENCHMARK EVIDENCE (STAGE 10 DATA) */}
-      <section style={{ marginTop: '24px', border: '1px solid #e0e0e0', borderRadius: '8px', overflow: 'hidden', background: '#fff' }}>
-        <div
-          onClick={() => setShowEvidence(!showEvidence)}
-          style={{
-            padding: '12px 16px',
-            background: '#f1f3f5',
-            cursor: 'pointer',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            fontWeight: '700',
-            fontSize: '14px',
-          }}
-        >
-          <span>📊 Stage 10 — 100-Trial Deterministic Interruption Benchmark (Persisted Evidence)</span>
-          <span>{showEvidence ? '▲ Hide' : '▼ Expand'}</span>
+          </section>
         </div>
 
-        {showEvidence && (
-          <div style={{ padding: '16px', fontSize: '13px', lineHeight: '1.6' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '12px' }}>
-              <thead>
-                <tr style={{ background: '#f8f9fa', borderBottom: '2px solid #dee2e6', textAlign: 'left' }}>
-                  <th style={{ padding: '8px' }}>Benchmark Metric</th>
-                  <th style={{ padding: '8px', color: '#0066cc' }}>Fenced Implementation</th>
-                  <th style={{ padding: '8px', color: '#d32f2f' }}>Unfenced Baseline</th>
-                  <th style={{ padding: '8px' }}>Engineering Significance</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr style={{ borderBottom: '1px solid #eee' }}>
-                  <td style={{ padding: '8px' }}><strong>Stale Results Accepted</strong></td>
-                  <td style={{ padding: '8px', fontWeight: '700', color: '#2e7d32' }}>0 / 100</td>
-                  <td style={{ padding: '8px', fontWeight: '700', color: '#d32f2f' }}>50 / 100</td>
-                  <td style={{ padding: '8px' }}>Zero stale leaks with generation fencing</td>
-                </tr>
-                <tr style={{ borderBottom: '1px solid #eee' }}>
-                  <td style={{ padding: '8px' }}><strong>Stale Result Leak Rate</strong></td>
-                  <td style={{ padding: '8px', fontWeight: '700', color: '#2e7d32' }}>0.0%</td>
-                  <td style={{ padding: '8px', fontWeight: '700', color: '#d32f2f' }}>50.0%</td>
-                  <td style={{ padding: '8px' }}>Cancellation alone fails whenever tool completes</td>
-                </tr>
-                <tr style={{ borderBottom: '1px solid #eee' }}>
-                  <td style={{ padding: '8px' }}><strong>Generation Fence Catch Rate</strong></td>
-                  <td style={{ padding: '8px', fontWeight: '700', color: '#2e7d32' }}>100.0% (50/50)</td>
-                  <td style={{ padding: '8px', color: '#666' }}>0.0% (No Fence)</td>
-                  <td style={{ padding: '8px' }}>Catches 100% of cancellation-raced completions</td>
-                </tr>
-                <tr style={{ borderBottom: '1px solid #eee' }}>
-                  <td style={{ padding: '8px' }}><strong>Recovery Success Rate</strong></td>
-                  <td style={{ padding: '8px', fontWeight: '700', color: '#2e7d32' }}>100.0%</td>
-                  <td style={{ padding: '8px', color: '#d32f2f' }}>50.0%</td>
-                  <td style={{ padding: '8px' }}>Clean user turn recovery on every interruption</td>
-                </tr>
-                <tr>
-                  <td style={{ padding: '8px' }}><strong>Invalidation Latency (Median)</strong></td>
-                  <td style={{ padding: '8px' }}>0ms (Atomic)</td>
-                  <td style={{ padding: '8px' }}>0ms</td>
-                  <td style={{ padding: '8px' }}>Instantaneous generation invalidation</td>
-                </tr>
-              </tbody>
-            </table>
-            <div style={{ fontSize: '11px', color: '#666', fontStyle: 'italic' }}>
-              Note: Deterministic concurrency simulation data from <code>tests/results/stage10-results.json</code>; reflects asynchronous state fencing and containment, not live network transit.
-            </div>
+        {/* SECONDARY COLLAPSIBLE PANEL: TECHNICAL DETAILS & LIVE TELEMETRY */}
+        <section style={{ background: '#fff', borderRadius: '16px', border: '1px solid #e2e8f0', overflow: 'hidden', boxShadow: '0 4px 16px rgba(0,0,0,0.03)' }}>
+          <div
+            onClick={() => setShowTechnicalDetails(!showTechnicalDetails)}
+            style={{
+              padding: '16px 24px',
+              background: '#f8fafc',
+              borderBottom: showTechnicalDetails ? '1px solid #e2e8f0' : 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              fontWeight: '700',
+              fontSize: '14px',
+              color: '#334155',
+            }}
+          >
+            <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              ⚙️ Technical Evidence & Live Telemetry Stream
+              <span style={{ fontSize: '11px', background: '#cbd5e1', color: '#334155', padding: '2px 8px', borderRadius: '10px' }}>
+                {operations.size} Operations • {eventLog.length} Events
+              </span>
+            </span>
+            <span>{showTechnicalDetails ? '▲ Hide Telemetry' : '▼ Expand Technical Details'}</span>
           </div>
-        )}
-      </section>
+
+          {showTechnicalDetails && (
+            <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              
+              {/* OPERATION TRACKER GRID */}
+              <div>
+                <h4 style={{ margin: '0 0 10px 0', fontSize: '13px', fontWeight: '700', color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Active & Fenced Operation States
+                </h4>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '10px' }}>
+                  {operations.size === 0 ? (
+                    <div style={{ fontSize: '12px', color: '#94a3b8' }}>No operations logged yet.</div>
+                  ) : (
+                    Array.from(operations.values()).map((op) => {
+                      const isCurrent = op.generation_id === currentGeneration;
+                      return (
+                        <div
+                          key={op.operation_id}
+                          style={{
+                            padding: '10px 14px',
+                            borderRadius: '8px',
+                            fontSize: '12px',
+                            background: op.status === 'discarded' ? '#fef2f2' : isCurrent ? '#eff6ff' : '#f8fafc',
+                            border: `1px solid ${op.status === 'discarded' ? '#fca5a5' : isCurrent ? '#bfdbfe' : '#e2e8f0'}`,
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                          }}
+                        >
+                          <div>
+                            <span style={{ fontWeight: '700', textTransform: 'uppercase' }}>{op.operation_type}</span>{' '}
+                            <span style={{ fontFamily: 'monospace', color: '#64748b' }}>[{op.operation_id}]</span>{' '}
+                            <span style={{ fontWeight: '700', color: isCurrent ? '#2563eb' : '#64748b' }}>Gen {op.generation_id}</span>
+                            {op.details && <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>{op.details}</div>}
+                          </div>
+                          <span
+                            style={{
+                              fontSize: '10px',
+                              fontWeight: '700',
+                              padding: '2px 6px',
+                              borderRadius: '4px',
+                              background: op.status === 'discarded' ? '#ef4444' : op.status === 'running' ? '#3b82f6' : '#10b981',
+                              color: '#fff',
+                            }}
+                          >
+                            {op.status === 'discarded' ? '🛡️ FENCED' : op.status.toUpperCase()}
+                          </span>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* EVENT STREAM LOG */}
+              <div>
+                <h4 style={{ margin: '0 0 10px 0', fontSize: '13px', fontWeight: '700', color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Lifecycle Event Log
+                </h4>
+                <div style={{ maxHeight: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px', background: '#0f172a', padding: '12px', borderRadius: '8px', fontFamily: 'monospace', fontSize: '11px' }}>
+                  {eventLog.map((ev) => (
+                    <div
+                      key={ev.id}
+                      style={{
+                        color: ev.is_stale_or_discarded ? '#fb923c' : '#94a3b8',
+                        display: 'flex',
+                        gap: '8px',
+                      }}
+                    >
+                      <span style={{ color: '#64748b' }}>[{ev.timestamp}]</span>
+                      <span style={{ color: ev.is_stale_or_discarded ? '#f97316' : '#38bdf8', fontWeight: '700' }}>{ev.event_type}</span>
+                      {ev.generation_id !== undefined && <span>(Gen {ev.generation_id})</span>}
+                      {ev.details && <span>- {ev.details}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+      </main>
 
       {/* FOOTER */}
-      <footer style={{ marginTop: '24px', textAlign: 'center', fontSize: '12px', color: '#888' }}>
-        Rime Hackathon Challenge by DataForge • Realtime Voice Assistant with Generation Fencing
+      <footer style={{ marginTop: '40px', padding: '20px', textAlign: 'center', fontSize: '13px', color: '#64748b', borderTop: '1px solid #e2e8f0' }}>
+        DataForge • Rime Hackathon Voice Assistant • Realtime Interruption & Generation Fencing
       </footer>
     </div>
   );

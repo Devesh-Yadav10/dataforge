@@ -1,142 +1,180 @@
-# Rime Hackathon Project: Voice Shopping Assistant with Generation Fencing
+# DataForge: Voice AI Shopping Assistant with Generation Fencing & Rime TTS
 
-This project demonstrates correct realtime voice interruption and recovery using generation fencing.
+DataForge is a low-latency, interruption-safe conversational shopping assistant built with **LiveKit**, **Deepgram**, **Google Gemini**, **Groq**, and **Rime TTS**. It features deterministic generation fencing to guarantee that stale async results from interrupted turns never leak into speech or corrupt conversation context.
 
-## Core Problem
+---
 
-When a user interrupts a voice agent while it is speaking or while asynchronous work such as a tool is running, obsolete work must not produce stale output or corrupt the current conversation.
+## Setup & Getting Started
 
-## Solution: Generation Fencing
+### Prerequisites
+- **Node.js:** v18.0.0+ (Tested on Node.js v20 and v24)
+- **npm:** v9.0.0+
 
-Each conversational session has:
-- `session_id`
-- `generation_id`
-- `operation_id`
+### 1. Installation
+Clone the repository and install dependencies:
+```bash
+npm install
+```
 
-When the user interrupts:
-- Increment `generation_id`
-- Invalidate previous-generation work
-- Attempt cancellation of active work
-- Allow the new generation to continue
-- Reject any old-generation async result that arrives later
+### 2. Environment Configuration
+Copy the template environment file and provide your API keys:
+```bash
+cp .env.example .env
+```
 
-Cancellation is best-effort. Generation fencing is the correctness mechanism.
+Configure the following variables in `.env`:
+- `LIVEKIT_URL`: LiveKit Cloud / Server WebSocket URL (`wss://...`)
+- `LIVEKIT_API_KEY`: LiveKit API Key
+- `LIVEKIT_API_SECRET`: LiveKit API Secret
+- `DEEPGRAM_API_KEY`: Deepgram API Key for Nova-2 Speech-to-Text
+- `GEMINI_API_KEY`: Google Gemini API Key
+- `GROQ_API_KEY`: Groq API Key (for Tier 3 LLM fallback)
+- `RIME_API_KEY`: Rime API Key for neural voice synthesis
+- `LIVEKIT_ROOM_NAME`: (Optional) Room name (defaults to `default-room`)
+- `PORT`: (Optional) Backend token server port (defaults to `3000`)
+- `LOG_LEVEL`: (Optional) Logger level (defaults to `info`)
 
-## Project Structure
+### 3. Build the Project
+Compile the TypeScript backend and build the React frontend:
+```bash
+npm run build
+```
 
-- `agent/`: TypeScript backend agent and token server
-- `client/`: React/Vite client-side dashboard
-- `tests/`: Test files
-- `docs/`: Documentation
+### 4. Run Tests
+Execute the full test suite (tools, tracker, turn invariants, interruption fencing, baseline comparison, stress benchmark, and Rime TTS):
+```bash
+npm test
+```
 
-## Pipeline Architecture & Models
+Individual test suites:
+- `npm run test:shopping`: Shopping and comparison tool unit tests
+- `npm run test:tracker`: GenerationTracker lifecycle and fencing invariants
+- `npm run test:turn`: LiveKit turn management and barge-in invariants
+- `npm run test:interruption`: Interruption fencing and abort signal tests
+- `npm run test:comparison`: Fenced vs Unfenced baseline comparison
+- `npm run test:stress`: 100-trial automated stress benchmark
+- `npm run test:rime`: Rime TTS voice pipeline and fencing verification
 
-- **STT (Speech-to-Text):** Deepgram Nova-2 (`deepgram/nova-2`)
-- **LLM:** Google Gemini 2.5 Flash (`gemini-2.5-flash`) via the official `@google/genai` SDK
-- **TTS (Spoken Output):** Rime TTS
-  - **Model ID:** `rime/coda`
-  - **Speaker / Voice:** `celeste`
-  - **Language:** `en` (English)
-  - **Audio Format:** 16,000 Hz, 1-channel `pcm_s16le` audio frames
-  - **Transport:** WebSocket streaming via LiveKit inference pipeline directly into the LiveKit agent audio track
-- **Voice Connection & Data:** LiveKit Agents (`@livekit/agents`) + LiveKit Web Client (`livekit-client`)
+### 5. Start the Voice Agent & Token Server
+Start the backend agent service (includes LiveKit Agent and local token endpoint on port 3000):
+```bash
+npm start
+```
 
-Rime TTS is the primary spoken voice output of the assistant. Streaming LLM delta tokens are fed incrementally into Rime TTS to ensure low-latency realtime speech playback.
+### 6. Start the Web Client
+In a separate terminal, launch the Vite client:
+```bash
+npm run dev:client
+```
+Open [http://localhost:5173](http://localhost:5173) in your browser.
 
-## Server-Side Token Endpoint & Security
+---
 
-To ensure strict credential isolation:
-- **No Client Secrets:** `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, and external AI provider keys remain strictly server-side.
-- **Short-Lived Tokens:** When the browser connects, it requests `GET /token` from the backend service. The server mints a single-use, 15-minute TTL LiveKit participant token with minimal permissions (`roomJoin`, `canPublish`, `canPublishData`, `canSubscribe`).
-- **No Long-Lived Token Storage:** The client requires no `VITE_LIVEKIT_TOKEN` or `VITE_LIVEKIT_URL`.
-- **Intended Use:** The token endpoint is built for local hackathon demonstration and does not provide production-grade authentication.
+## Architecture
 
-## Environment Variables
+DataForge follows an event-driven, generation-fenced pipeline:
 
-Server-side (`.env` — never committed to Git):
-- `LIVEKIT_URL`: LiveKit server WebSocket URL
-- `LIVEKIT_API_KEY`: LiveKit project API key
-- `LIVEKIT_API_SECRET`: LiveKit project API secret
-- `DEEPGRAM_API_KEY`: Deepgram API key for Nova-2 STT
-- `GEMINI_API_KEY`: Google Gemini API key for the LLM
-- `RIME_API_KEY`: Rime API key for Coda TTS synthesis
-- `LIVEKIT_ROOM_NAME`: Optional LiveKit room name (defaults to `default-room`)
-- `LOG_LEVEL`: Optional LiveKit logger level (defaults to `info`)
-- `PORT`: Optional server port for the token endpoint (defaults to `3000`)
+```text
+  [ User Microphone ]
+          │ (WebRTC Audio)
+          ▼
+  [ LiveKit Room ] ──► [ Deepgram Nova-2 STT ]
+                                │ (Finalized Turn Transcript)
+                                ▼
+                   [ GenerationTracker (Gen N) ]
+                                │
+                                ▼
+              [ Multi-Tier LLM Pipeline ]
+         ┌──────────────────────┴──────────────────────┐
+         ▼                                             ▼
+  [ Direct Response ]                           [ Tool Invocation ]
+         │                                      • search_products
+         │                                      • compare_products
+         │                                             │ (Fenced Result)
+         └──────────────────────┬──────────────────────┘
+                                │ (Streaming Delta Tokens)
+                                ▼
+                     [ Rime Coda TTS (WebSocket) ]
+                                │ (16kHz PCM Frames)
+                                ▼
+                   [ LiveKit WebRTC Audio Playout ]
+                                │
+                                ▼
+                      [ Browser Speaker ]
+```
 
-Client-side:
-- No client `.env` required. The browser fetches connection parameters dynamically from the backend `/token` service.
+- **React/Vite Frontend (`client/`):** Realtime web interface with Inter typography, monochrome SVG icons, Navy Blue & Beige palette, conversation chat history, side-by-side comparison cards, and engineering telemetry drawer.
+- **LiveKit Agents (`@livekit/agents`):** Manages WebRTC audio publishing, participant sessions, and event-driven voice turn dispatch.
+- **Deepgram Nova-2 STT (`@livekit/agents-plugin-deepgram`):** Fast, streaming speech-to-text transcript generation with turn endpointing.
+- **Multi-Tier LLM Pipeline:**
+  1. **Primary:** Google Gemini 3.5 Flash-Lite (`gemini-3.5-flash-lite`)
+  2. **Tier 2 Fallback:** Google Gemini 3.1 Flash-Lite (`gemini-3.1-flash-lite`)
+  3. **Tier 3 Provider Fallback:** Groq `openai/gpt-oss-20b`
+- **Deterministic Shopping Catalog (`agent/tools/shopping.ts`):** In-memory catalog of 16 curated products supporting `search_products` and `compare_products`.
+- **Rime TTS (`@livekit/agents-plugin-rime`):** Low-latency neural speech synthesis over WebSocket using the `coda` model and `celeste` voice.
+- **GenerationTracker (`agent/tracker.ts`):** Generation counter and operation registry enforcing the `tracker.isCurrent(op)` invariant.
+- **Token Server (`agent/token_server.ts`):** Server-side HTTP endpoint on port 3000 issuing short-lived participant JWTs.
+- **Data Channel Telemetry:** Realtime telemetry and structured product/comparison data broadcast via LiveKit reliable data channels.
 
-## Deterministic Shopping Tools & Latency Simulation
+---
 
-- **Tool:** `search_products` (`agent/tools/shopping.ts`)
-- **Dataset:** 16 hardcoded deterministic products across headphones, laptops, and phones.
-- **Filtering Parameters:** `query`, `category`, `brand`, `max_price`, `min_ram_gb`.
-- **Artificial Delay:** Default ~4,000 ms delay with `AbortSignal` cancellation support to enable reproducible async race conditions for upcoming interruption and generation-fencing stages.
-- **Function Calling:** Gemini function calling -> `searchProducts` execution -> streaming spoken response through Rime TTS.
+## Third-Party Services
 
-## Generation & Operation Tracking Architecture
+1. **LiveKit Cloud / Server:** Realtime WebRTC audio transport, agent session management, and data channels.
+2. **Deepgram:** Streaming speech-to-text transcription using the Nova-2 model (`nova-2-general`).
+3. **Google Gemini:** Primary LLM intelligence and function calling via the official `@google/genai` SDK.
+4. **Groq:** High-speed cloud LLM inference provider for tertiary fallback using `openai/gpt-oss-20b`.
+5. **Rime:** Expressive, low-latency neural text-to-speech voice synthesis.
 
-- **Session Tracking (`session_id`):** Stable session identifier generated per active AgentSession instance.
-- **Generation Tracking (`generation_id`):** Monotonically increasing counter representing coherent user turns and active conversational generation.
-- **Operation Tracking (`operation_id`):** Every async task (`stt`, `llm`, `tool`, `tts`) is assigned a unique operation ID capturing its start generation, timestamp, and dedicated `AbortController`.
-- **Generation Fencing:** Centralized invariant `tracker.isCurrent(operation)` checks if an operation's captured generation matches `currentGeneration`. If false, async results are discarded with structured reason `STALE_GENERATION` and prevented from corrupting the conversation state or triggering audio output.
+---
 
-## Voice Interruption & Barge-In Handling
+## Exact Rime Configuration
 
-- **Barge-In Detection:** Listens on LiveKit's `AgentSessionEventTypes.UserStateChanged` (`newState === 'speaking'`).
-- **Generation Invalidation Sequence:**
-  1. Atomic `tracker.invalidateCurrentGeneration('user_barge_in')` advances the generation counter **first**, immediately obsoleting all active work.
-  2. Abort requests (`op.abortController.abort()`) are dispatched to running operations belonging to the old generation.
-  3. LiveKit agent speech and Rime audio playback are immediately interrupted via `session.interrupt({ force: true })` and `speechHandle.interrupt(true)`.
-  4. Any in-flight tool, LLM chunk, or TTS stream belonging to the previous generation is fenced by `!tracker.isCurrent(op)` and safely discarded (`operation_discarded`).
-  5. The incoming new user transcript is routed and processed under the new active generation.
+Derived directly from the codebase (`agent/index.ts` and `@livekit/agents-plugin-rime`):
 
-## Unfenced Baseline Comparison
+| Parameter | Configured Value | Description |
+|:---|:---|:---|
+| **Model ID** | `coda` | Rime Coda neural voice synthesis model |
+| **Speaker / Voice** | `celeste` | Expressive conversational speaker voice |
+| **Language** | `eng` | English language synthesis |
+| **REST Base Endpoint** | `https://users.rime.ai/v1/rime-tts` | Rime standard REST API endpoint |
+| **WebSocket Streaming Endpoint** | `wss://users-ws.rime.ai` | Realtime low-latency WebSocket endpoint |
+| **Audio Format** | 16,000 Hz, 1-channel mono `pcm_s16le` | Raw 16kHz PCM audio frames |
+| **Transport** | WebSocket streaming (`useWebsocket: true`) | Direct streaming to LiveKit agent audio publisher |
+| **Environment Variable** | `RIME_API_KEY` | Authentication key for Rime Cloud API |
 
-To demonstrate why generation fencing is necessary, an unfenced baseline is provided at [`agent/baseline/index.ts`](agent/baseline/index.ts):
-- **Identical Setup:** Uses the exact same Deepgram Nova-2 STT, Gemini 2.5 Flash LLM, Rime Coda TTS, dataset, and shopping tools.
-- **Key Difference:** The unfenced baseline has **no generation tracking or fencing** (`isCurrent`, `generation_id`).
-- **The Failure Mode Exposed:** When a user interrupts an async tool operation ("Find me a laptop under $1000" -> interrupted with "under $800 with 16GB RAM"), cancellation alone may lose the race. In the unfenced baseline, the old completed tool result is erroneously accepted and fed into the LLM/TTS pipeline, speaking the stale answer over the active conversation. In the fenced implementation, the stale result is immediately discarded by generation fencing.
+---
 
-## Benchmark & Stress Testing Evidence (Stage 10)
+## Failure & Interruption Behavior
 
-A 100-trial automated stress suite ([`tests/stress.test.ts`](tests/stress.test.ts)) evaluates the interruption race condition comparing the Fenced implementation against the Unfenced Baseline:
+### 1. 3-Level LLM Fallback Cascade
+When an LLM request fails specifically due to quota or rate limits (HTTP 429 / `RESOURCE_EXHAUSTED`):
+1. **Primary Failure:** If `gemini-3.5-flash-lite` encounters a 429, DataForge automatically transitions to `gemini-3.1-flash-lite`.
+2. **Secondary Failure:** If `gemini-3.1-flash-lite` also encounters a 429, DataForge falls back to Groq `openai/gpt-oss-20b`.
+3. **Groq API Key Unset:** If `GROQ_API_KEY` is not configured, the system cleanly logs the fallback boundary and surfaces a structured error without crashing.
 
-| Metric | Fenced Implementation | Unfenced Baseline | Meaning / Impact |
-| :--- | :--- | :--- | :--- |
-| **Total Interrupted Operations** | 100 | 100 | Total interrupted operations tested |
-| **Stale Results Accepted** | **0** | **50** | Zero stale output leaks with fencing |
-| **Stale Result Leak Rate** | **0.0%** | **50.0%** | Cancellation alone leaks whenever tool completes |
-| **Cancellation Success Rate** | 50.0% | 50.0% | Inherent cancellation race conditions |
-| **Generation Fence Catches** | **50 / 50** | **0 (No Fence)** | Catches 100% of raced completions |
-| **Fence Catch Rate** | **100.0%** | **0.0%** | Guarantees correctness when cancellation loses race |
-| **Recovery Success Rate** | **100.0%** | **50.0%** | Clean recovery without stale speech |
-| **Invalidation Latency (Median)** | **0ms (Atomic)** | 0ms | Immediate generation transition |
-| **New Response Latency (Median)** | ~5ms | ~5ms | Fast turnaround for new turn |
+### 2. Barge-In Interruption Handling
+When the user speaks while the assistant is responding (TTS speaking or tool running):
+1. `tracker.invalidateCurrentGeneration('user_barge_in')` advances the generation counter from `Gen N` to `Gen N+1`.
+2. Running operations in `Gen N` receive an abort signal via their dedicated `AbortController`.
+3. Speech playback is immediately halted using `session.interrupt({ force: true })` and `currentSpeechHandle.interrupt(true)`.
+4. Stale operations completing late are caught by `!tracker.isCurrent(op)` and discarded (`STALE_GENERATION`).
+5. The replacement turn is processed under `Gen N+1`.
 
-*Raw data and detailed breakdowns are persisted in [`tests/results/stage10-results.json`](tests/results/stage10-results.json) and [`tests/results/stage10-summary.md`](tests/results/stage10-summary.md).*
+### 3. Rime TTS Error Handling
+- Rime synthesis is monitored via `currentSpeechHandle.waitForPlayout()`.
+- If network synthesis is interrupted or encounters an error, the error is safely caught and logged without destabilizing the session.
 
-## Demo-Ready Observability UI (Stage 11)
+---
 
-The React web client provides a realtime observability dashboard tailored for reviewing voice interruption and recovery:
-- **Generation & Session Telemetry:** Live indicators for `session_id`, `generation_id`, and total barge-in counters.
-- **Visual Turn History:** User and assistant speech bubbles tagged with their generation ownership (`Gen N`).
-- **Operation Tracker:** Status cards for active and completed `llm`, `tool`, and `tts` tasks, highlighting discarded tasks in red (`🛡️ DISCARDED`).
-- **Lifecycle Event Stream:** Chronological event feed (latest 50 events) displaying speech detection, generation invalidation, tool executions, and discard events.
-- **Collapsible Stage 10 Benchmark Panel:** Summary table of the 100-trial deterministic interruption benchmark.
-- **Interactive Voice Controls:** Connect/Disconnect buttons, live microphone toggle, and scenario test guides.
+## Known Limitations
 
-## Current Stage
+1. **Cloud Network Dependency:** Realtime STT, LLM, and TTS require outbound internet connectivity to Deepgram, Gemini/Groq, and Rime servers.
+2. **Browser Autoplay Compliance:** Browsers require an initial user click (e.g. "Connect Voice") before WebRTC audio playout can begin.
+3. **Deterministic Catalog Scope:** The shopping catalog is currently an in-memory dataset of 16 products designed for deterministic benchmarking.
+4. **Provider Quotas:** Free-tier API keys may hit rate limits; the multi-tier fallback architecture mitigates provider-specific rate limits.
 
-Stage 11 Completed: Minimal, Demo-Ready UI with generation visibility, active operation tracking, live event log stream, and persisted benchmark evidence.
-
-## Getting Started
-
-1. Install dependencies: `npm install`
-2. Build the project: `npm run build`
-3. Run the agent: `npm start`
-4. Run the client: `npm run dev:client` (or `npx vite client`)
+---
 
 ## License
 
